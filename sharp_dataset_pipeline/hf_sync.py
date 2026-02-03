@@ -23,6 +23,20 @@ _hf_exists_cache_lock = threading.Lock()
 _hf_exists_cache = {}
 
 
+def _hf_hub_download_quiet(*, repo_id: str, filename: str):
+    from huggingface_hub import hf_hub_download
+
+    try:
+        return hf_hub_download(repo_id=repo_id, repo_type=_HF_REPO_TYPE, filename=filename, disable_tqdm=True)
+    except TypeError:
+        pass
+    try:
+        return hf_hub_download(repo_id=repo_id, repo_type=_HF_REPO_TYPE, filename=filename, tqdm_class=None)
+    except TypeError:
+        pass
+    return hf_hub_download(repo_id=repo_id, repo_type=_HF_REPO_TYPE, filename=filename)
+
+
 def configure_hf_sync(
     *,
     hf_upload: bool,
@@ -147,9 +161,7 @@ def _hf_try_read_json(repo_id: str, repo_path: str):
     if (not _HF_UPLOAD) or (not repo_id) or (not repo_path):
         return None
     try:
-        from huggingface_hub import hf_hub_download
-
-        local = hf_hub_download(repo_id=repo_id, repo_type=_HF_REPO_TYPE, filename=repo_path)
+        local = _hf_hub_download_quiet(repo_id=repo_id, filename=repo_path)
         with open(local, 'r', encoding='utf-8') as f:
             return json.loads(f.read() or "{}")
     except Exception:
@@ -262,10 +274,8 @@ def _hf_try_get_lock_info_status(repo_id: str, image_id: str):
     if (not _HF_UPLOAD) or (not repo_id) or (not image_id):
         return (None, False)
     try:
-        from huggingface_hub import hf_hub_download
-
         lock_path = hf_locks_repo_path(image_id)
-        local = hf_hub_download(repo_id=repo_id, repo_type=_HF_REPO_TYPE, filename=lock_path)
+        local = _hf_hub_download_quiet(repo_id=repo_id, filename=lock_path)
         ts = None
         owner = None
         with open(local, 'r', encoding='utf-8') as f:
@@ -361,10 +371,8 @@ def _hf_try_get_range_lock_info(repo_id: str, range_start: int, range_end: int):
     if (not _HF_UPLOAD) or (not repo_id):
         return None
     try:
-        from huggingface_hub import hf_hub_download
-
         lock_path = _hf_range_lock_repo_path(range_start, range_end)
-        local = hf_hub_download(repo_id=repo_id, repo_type=_HF_REPO_TYPE, filename=lock_path)
+        local = _hf_hub_download_quiet(repo_id=repo_id, filename=lock_path)
         ts = None
         owner = None
         with open(local, 'r', encoding='utf-8') as f:
@@ -453,6 +461,7 @@ class LockDoneSync:
         self.instance_id = uuid.uuid4().hex
         self.lock = threading.Lock()
         self.done = _hf_try_list_dir_ids(repo_id, _HF_DONE_DIR)
+        self._recent = {}
 
     def is_done(self, image_id: str) -> bool:
         with self.lock:
@@ -464,9 +473,26 @@ class LockDoneSync:
         if self.is_done(image_id):
             return ("done", None)
 
+        try:
+            now = time.time()
+            with self.lock:
+                rec = self._recent.get(str(image_id))
+            if rec is not None:
+                st, until = rec
+                if (until is not None) and float(until) > float(now):
+                    return (st, float(until))
+        except Exception:
+            pass
+
         info, info_err = _hf_try_get_lock_info_status(self.repo_id, image_id)
         if info_err:
-            return ("error", time.time() + 30.0)
+            ra = time.time() + 30.0
+            try:
+                with self.lock:
+                    self._recent[str(image_id)] = ("error", float(ra))
+            except Exception:
+                pass
+            return ("error", ra)
 
         if info is not None:
             ts = info.get("ts")
@@ -475,14 +501,38 @@ class LockDoneSync:
                     tsf = float(ts)
                     age = time.time() - tsf
                     if age < float(_HF_LOCK_STALE_SECS):
-                        return ("locked_by_other", tsf + float(_HF_LOCK_STALE_SECS))
+                        ra = tsf + float(_HF_LOCK_STALE_SECS)
+                        try:
+                            with self.lock:
+                                self._recent[str(image_id)] = ("locked_by_other", float(ra))
+                        except Exception:
+                            pass
+                        return ("locked_by_other", ra)
                 except Exception:
-                    return ("error", time.time() + 30.0)
+                    ra = time.time() + 30.0
+                    try:
+                        with self.lock:
+                            self._recent[str(image_id)] = ("error", float(ra))
+                    except Exception:
+                        pass
+                    return ("error", ra)
 
         ok = _hf_try_write_lock(self.repo_id, image_id, self.instance_id, time.time(), extra=extra)
         if ok:
-            return ("acquired", time.time() + float(_HF_LOCK_STALE_SECS))
-        return ("error", time.time() + 30.0)
+            ra = time.time() + float(_HF_LOCK_STALE_SECS)
+            try:
+                with self.lock:
+                    self._recent[str(image_id)] = ("acquired", float(ra))
+            except Exception:
+                pass
+            return ("acquired", ra)
+        ra = time.time() + 30.0
+        try:
+            with self.lock:
+                self._recent[str(image_id)] = ("error", float(ra))
+        except Exception:
+            pass
+        return ("error", ra)
 
     def try_lock(self, image_id: str, extra: str | None = None) -> bool:
         st, _ = self.try_lock_status(image_id, extra=extra)

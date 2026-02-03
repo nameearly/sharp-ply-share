@@ -331,12 +331,22 @@ def upload_worker(
                 threading.Thread(target=try_super_squash_fn, args=(cfg.hf_repo_id,), daemon=True).start()
         except KeyboardInterrupt:
             try:
-                touch_stop_file(cfg)
-            except Exception:
-                pass
-            stop_event.set()
-            try:
-                debug_fn(f"Ctrl+C: HF 上传中断，进入停止流程 | stop_file={_stop_file_path(cfg)}")
+                if (not stop_event.is_set()) and (not stop_requested(cfg)):
+                    max_retry = 2
+                    try:
+                        if isinstance(task, dict):
+                            r = int(task.get("_kb_retries", 0) or 0)
+                            if r < int(max_retry):
+                                task["_kb_retries"] = int(r) + 1
+                                upload_q.put(task)
+                            else:
+                                touch_stop_file(cfg)
+                                stop_event.set()
+                    except Exception:
+                        try:
+                            upload_q.put(task)
+                        except Exception:
+                            pass
             except Exception:
                 pass
         except Exception as e:
@@ -396,12 +406,22 @@ def predict_worker(
                 plys = run_sharp_predict_once_fn(image_path)
             except KeyboardInterrupt:
                 try:
-                    touch_stop_file(cfg)
-                except Exception:
-                    pass
-                stop_event.set()
-                try:
-                    debug_fn(f"Ctrl+C: predict 中断，进入停止流程 | stop_file={_stop_file_path(cfg)}")
+                    if (not stop_event.is_set()) and (not stop_requested(cfg)):
+                        max_retry = 2
+                        try:
+                            if isinstance(item, dict):
+                                r = int(item.get("_kb_retries", 0) or 0)
+                                if r < int(max_retry):
+                                    item["_kb_retries"] = int(r) + 1
+                                    image_q.put(item)
+                                else:
+                                    touch_stop_file(cfg)
+                                    stop_event.set()
+                        except Exception:
+                            try:
+                                image_q.put(item)
+                            except Exception:
+                                pass
                 except Exception:
                     pass
                 plys = []
@@ -458,7 +478,40 @@ def download_loop(
         if downloaded_images >= int(cfg.max_images):
             break
         if cfg.stop_on_rate_limit and unsplash.is_rate_limited():
-            break
+            try:
+                if (active_range is not None) and (range_coord is not None):
+                    a, b = active_range
+                    try:
+                        range_coord.mark_abandoned_range(int(a), int(b), "rate_limited_sleep")
+                    except Exception:
+                        pass
+                    active_range = None
+                    active_range_end_page = None
+                    range_progress = None
+                    active_range_acquired_ts = None
+            except Exception:
+                pass
+
+            wait_s = 3600.0
+            try:
+                wait_s = float(unsplash.rate_limit_wait_s(3600.0))
+            except Exception:
+                wait_s = 3600.0
+            try:
+                if debug_fn:
+                    debug_fn(f"Unsplash rate limited：睡眠 {int(wait_s)}s 后继续")
+            except Exception:
+                pass
+            end_ts = time.time() + max(1.0, float(wait_s))
+            while time.time() < end_ts:
+                if not gate(cfg, stop_event):
+                    return
+                idle_sleep(cfg)
+            try:
+                unsplash.clear_rate_limited()
+            except Exception:
+                pass
+            continue
 
         if str(cfg.source).strip().lower() == "list":
             order = cfg.list_orders[order_idx % len(cfg.list_orders)]

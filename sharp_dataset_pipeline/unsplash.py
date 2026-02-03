@@ -51,6 +51,29 @@ def is_rate_limited() -> bool:
     return bool(_rate_limited)
 
 
+def rate_limit_wait_s(default_s: float = 3600.0) -> float:
+    try:
+        if not _rate_limited:
+            return 0.0
+        now = time.time()
+        wait_s = max(0.0, float(_next_api_allowed_ts) - float(now))
+        if wait_s <= 0.0:
+            return float(default_s)
+        return float(wait_s)
+    except Exception:
+        return float(default_s)
+
+
+def clear_rate_limited() -> None:
+    global _rate_limited, _api_backoff_seconds, _next_api_allowed_ts
+    try:
+        _rate_limited = False
+        _api_backoff_seconds = 0.0
+        _next_api_allowed_ts = min(float(_next_api_allowed_ts), time.time() + 0.1)
+    except Exception:
+        return
+
+
 def _d(msg: str) -> None:
     if _debug is None:
         return
@@ -86,12 +109,18 @@ def _note_api_rate_limited(response):
             wait_s = None
 
     if wait_s is None:
-        if _api_backoff_seconds <= 0:
-            _api_backoff_seconds = 2.0
+        if _STOP_ON_RATE_LIMIT:
+            wait_s = 3600.0
+            _api_backoff_seconds = float(wait_s)
         else:
-            _api_backoff_seconds = min(120.0, _api_backoff_seconds * 2.0)
-        wait_s = _api_backoff_seconds
+            if _api_backoff_seconds <= 0:
+                _api_backoff_seconds = 2.0
+            else:
+                _api_backoff_seconds = min(120.0, _api_backoff_seconds * 2.0)
+            wait_s = _api_backoff_seconds
     else:
+        if _STOP_ON_RATE_LIMIT:
+            wait_s = max(3600.0, float(wait_s))
         _api_backoff_seconds = max(_api_backoff_seconds, float(wait_s))
 
     _next_api_allowed_ts = time.time() + float(wait_s)

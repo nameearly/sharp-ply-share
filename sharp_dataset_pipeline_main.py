@@ -66,7 +66,7 @@ RUN_ID = os.getenv("RUN_ID", datetime.now().strftime("unsplash_%Y%m%d_%H%M%S"))
 SAVE_DIR = os.path.join(OUTPUT_DIR, "runs", RUN_ID)
 IMAGES_DIR = os.path.join(SAVE_DIR, "images")
 GAUSSIANS_DIR = os.path.join(SAVE_DIR, "gaussians")
-SOURCE = _env_str("SOURCE", "search").strip().lower()  # search | list
+SOURCE = _env_str("SOURCE", "list").strip().lower()  # search | list
 MAX_SCAN = _env_int("MAX_SCAN", 200)
 MAX_IMAGES = _env_int("MAX_IMAGES", 50)
 INJECT_EXIF = _env_flag("INJECT_EXIF", True)
@@ -303,9 +303,16 @@ def _run_sharp_predict_once(input_path):
         *extra,
     ]
 
+    popen_kw = {}
+    try:
+        if os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+            popen_kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    except Exception:
+        popen_kw = {}
+
     try:
         try:
-            subprocess.run(cmd, cwd=ML_SHARP_DIR, check=True)
+            subprocess.run(cmd, cwd=ML_SHARP_DIR, check=True, **popen_kw)
         except subprocess.CalledProcessError as e:
             print_debug(f"ml-sharp 通过 'sharp predict' 执行失败，将尝试源码方式运行 | err={str(e)}")
 
@@ -331,7 +338,7 @@ def _run_sharp_predict_once(input_path):
                 "main_cli()"
             )
             cmd2 = ["conda", "run", "-n", CONDA_ENV_NAME, "python", "-c", code]
-            subprocess.run(cmd2, cwd=ML_SHARP_DIR, check=True)
+            subprocess.run(cmd2, cwd=ML_SHARP_DIR, check=True, **popen_kw)
     finally:
         _append_gpu_log("after_predict", input_path)
 
