@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+
+# Node
+node_modules/
+
+# Upstream / vendored projects (do not upload)
+ml-sharp-main/
+ml-sharp/
+
+# Local runs / outputs (large)
+runs/
+
+# Generated 3DGS assets
+*.ply
+*.spz
+
+# Bundled binaries (do not upload)
+tools/gsbox/gsbox.exe
+tools/gsbox/*.zip
+
+# OS / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
