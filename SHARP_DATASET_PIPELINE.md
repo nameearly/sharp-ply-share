@@ -103,6 +103,15 @@ Defaults:
 - `HF_INDEX_FLUSH_EVERY`: flush every N rows (default: `20`)
 - `HF_INDEX_FLUSH_SECS`: flush at least every N seconds (default: `30`)
 
+### gsplat.org share (optional)
+
+- `GSPLAT_UPLOAD`: enable uploading to gsplat.org and recording `gsplat_url` (default: `1`)
+- `GSPLAT_BASE`: gsplat base URL (default: `https://gsplat.org`)
+- `GSPLAT_EXPIRATION_TYPE`: `1week` / etc (default: `1week`)
+- `GSPLAT_FILTER_VISIBILITY`: visibility filter passed to `splat-transform` (default: `20000`)
+- `SPLAT_TRANSFORM_BIN`: `splat-transform` path (default: `splat-transform`)
+- `GSPLAT_USE_SMALL_PLY`: generate `*.small.gsplat.ply` before upload (default: `1`); set `0` to upload the original PLY
+
 ### Range locks (for `SOURCE=list` + `order_by=oldest`)
 
 - `RANGE_LOCKS_ENABLED`: enable range locks (default: `1`)

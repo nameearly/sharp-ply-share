@@ -198,3 +198,53 @@ class OrderedProgress:
                     continue
                 return int(o)
         return None
+
+    def to_dict(self) -> dict:
+        try:
+            return {
+                "range_start": int(self.range_start),
+                "range_end": int(self.range_end),
+                "frontier": int(self.frontier),
+                "holes": [(int(l), int(r)) for (l, r) in (self.holes or [])],
+            }
+        except Exception:
+            return {
+                "range_start": int(self.range_start),
+                "range_end": int(self.range_end),
+                "frontier": int(self.frontier),
+                "holes": [],
+            }
+
+    def apply_dict(self, obj: dict) -> None:
+        if not isinstance(obj, dict):
+            return
+        try:
+            f = obj.get("frontier")
+            if f is not None:
+                ff = int(f)
+                if int(self.range_start) <= int(ff) <= int(self.range_end) + 1:
+                    self.frontier = int(ff)
+        except Exception:
+            pass
+        try:
+            holes = obj.get("holes")
+            out = []
+            if isinstance(holes, list):
+                for it in holes:
+                    if not (isinstance(it, (list, tuple)) and len(it) == 2):
+                        continue
+                    l, r = it
+                    try:
+                        ll = int(l)
+                        rr = int(r)
+                    except Exception:
+                        continue
+                    if rr < ll:
+                        continue
+                    ll = max(int(ll), int(self.range_start))
+                    rr = min(int(rr), int(self.range_end))
+                    if ll <= rr:
+                        out.append((int(ll), int(rr)))
+            self.holes = sorted(out, key=lambda x: int(x[0]))
+        except Exception:
+            pass

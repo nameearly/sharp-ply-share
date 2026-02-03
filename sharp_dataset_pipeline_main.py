@@ -81,6 +81,7 @@ SHARP_VERBOSE = str(os.getenv("SHARP_VERBOSE", "0")).strip().lower() in ("1", "t
 SHARP_PER_IMAGE = str(os.getenv("SHARP_PER_IMAGE", "0")).strip().lower() in ("1", "true", "yes", "y")
 SHARP_BATCH_SIZE = int(os.getenv("SHARP_BATCH_SIZE", "0"))
 SHARP_INPUT_DIR = os.getenv("SHARP_INPUT_DIR", "").strip()
+SKIP_PREDICT = _env_flag("SKIP_PREDICT", False)
 
 HF_UPLOAD = _env_flag("HF_UPLOAD", True)
 HF_REPO_ID = _env_str("HF_REPO_ID", "eatmorefruit/sharp-ply-share").strip()
@@ -95,6 +96,7 @@ GSBOX_BIN = _env_str("GSBOX_BIN", "gsbox").strip()
 GSCONVERTER_BIN = _env_str("GSCONVERTER_BIN", "3dgsconverter").strip()
 
 PLY_DELETE_AFTER_UPLOAD = _env_flag("PLY_DELETE_AFTER_UPLOAD", True)
+VALID_FOCAL_FILE = _env_str("VALID_FOCAL_FILE", "").strip()
 
 # ===================== 配置（高级/一般不建议修改）=====================
 PER_PAGE = _env_int("PER_PAGE", 10)
@@ -109,6 +111,9 @@ RANGE_LOCK_STALE_SECS = float(os.getenv("RANGE_LOCK_STALE_SECS", "21600"))
 RANGE_SIZE = _env_int("RANGE_SIZE", 300)
 RANGE_SEEK_BACK_ITEMS = _env_int("RANGE_SEEK_BACK_ITEMS", 0)
 RANGE_LOCK_MIN_IMAGES = _env_int("RANGE_LOCK_MIN_IMAGES", 30)
+RANGE_HEARTBEAT_SECS = float(os.getenv("RANGE_HEARTBEAT_SECS", "600"))
+RANGE_PROGRESS_SECS = float(os.getenv("RANGE_PROGRESS_SECS", "300"))
+RANGE_ABANDONED_SECS = float(os.getenv("RANGE_ABANDONED_SECS", "60"))
 
 LOG_GPU_MEM = _env_flag("LOG_GPU_MEM", False)
 GPU_LOG_FILE = os.path.join(SAVE_DIR, "gpu_mem_log.csv")
@@ -134,6 +139,7 @@ GSPLAT_BASE = _env_str("GSPLAT_BASE", "https://gsplat.org").strip().rstrip("/")
 GSPLAT_EXPIRATION_TYPE = _env_str("GSPLAT_EXPIRATION_TYPE", "1week").strip()
 GSPLAT_FILTER_VISIBILITY = _env_int("GSPLAT_FILTER_VISIBILITY", 20000)
 SPLAT_TRANSFORM_BIN = _env_str("SPLAT_TRANSFORM_BIN", "splat-transform").strip()
+GSPLAT_USE_SMALL_PLY = _env_flag("GSPLAT_USE_SMALL_PLY", True)
 
 GSBOX_SPZ_QUALITY = _env_int("GSBOX_SPZ_QUALITY", 5)
 GSBOX_SPZ_VERSION = _env_int("GSBOX_SPZ_VERSION", 0)
@@ -300,7 +306,7 @@ def _run_sharp_predict_once(input_path):
 
             code = (
                 "import sys; "
-                f"sys.path.insert(0, r'{src_dir}'); "
+                f"sys.path.insert(0, {repr(src_dir)}); "
                 "from sharp.cli import main_cli; "
                 f"sys.argv = {repr(argv)}; "
                 "main_cli()"
@@ -528,7 +534,7 @@ def run_pipeline():
         hf_utils.ensure_repo(HF_REPO_ID, repo_type=HF_REPO_TYPE, debug_fn=print_debug)
 
     coord = None
-    if HF_UPLOAD and HF_USE_LOCKS and HF_REPO_ID:
+    if (not SKIP_PREDICT) and HF_UPLOAD and HF_USE_LOCKS and HF_REPO_ID:
         coord = hf_sync.LockDoneSync(HF_REPO_ID)
         remote_done = set(coord.done or set())
         if remote_done:
@@ -546,6 +552,21 @@ def run_pipeline():
     ):
         try:
             range_coord = hf_sync.RangeLockSync(HF_REPO_ID)
+            try:
+                if float(RANGE_HEARTBEAT_SECS) > 0:
+                    range_coord.heartbeat_secs = float(RANGE_HEARTBEAT_SECS)
+            except Exception:
+                pass
+            try:
+                if float(RANGE_PROGRESS_SECS) > 0:
+                    range_coord.progress_secs = float(RANGE_PROGRESS_SECS)
+            except Exception:
+                pass
+            try:
+                if float(RANGE_ABANDONED_SECS) > 0:
+                    range_coord.abandoned_secs = float(RANGE_ABANDONED_SECS)
+            except Exception:
+                pass
         except Exception:
             range_coord = None
 
@@ -578,6 +599,7 @@ def run_pipeline():
             gsplat_expiration_type=GSPLAT_EXPIRATION_TYPE,
             gsplat_filter_visibility=GSPLAT_FILTER_VISIBILITY,
             splat_transform_bin=SPLAT_TRANSFORM_BIN,
+            gsplat_use_small_ply=GSPLAT_USE_SMALL_PLY,
             spz_enabled=SPZ_EXPORT,
             spz_tool=SPZ_TOOL,
             gsbox_bin=GSBOX_BIN,
@@ -620,6 +642,16 @@ def run_pipeline():
         sigint_window_s=float(os.getenv("SIGINT_WINDOW_S", "2.0")),
     )
 
+    run_sharp_predict_once_fn = _run_sharp_predict_once
+    if SKIP_PREDICT:
+        def _skip_predict(_input_path: str):
+            return []
+        try:
+            _skip_predict._skip_predict = True
+        except Exception:
+            pass
+        run_sharp_predict_once_fn = _skip_predict
+
     pipeline.run(
         cfg,
         checked_ids=checked_ids,
@@ -628,7 +660,7 @@ def run_pipeline():
         index_sync=index_sync_obj,
         upload_sample_pair_fn=_upload_sample_pair,
         try_super_squash_fn=_hf_try_super_squash,
-        run_sharp_predict_once_fn=_run_sharp_predict_once,
+        run_sharp_predict_once_fn=run_sharp_predict_once_fn,
         local_has_focal_exif_fn=_local_has_focal_exif,
         inject_focal_exif_if_missing_fn=inject_focal_exif_if_missing,
         debug_fn=print_debug,

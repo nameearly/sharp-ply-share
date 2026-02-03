@@ -18,6 +18,7 @@ def upload_sample_pair(
     gsplat_expiration_type: str = "1week",
     gsplat_filter_visibility: int = 20000,
     splat_transform_bin: str = "splat-transform",
+    gsplat_use_small_ply: bool = True,
     spz_enabled: bool,
     spz_tool: str,
     gsbox_bin: str,
@@ -88,11 +89,17 @@ def upload_sample_pair(
                     filter_visibility=int(gsplat_filter_visibility),
                     title=str(image_id),
                     description="",
+                    use_small_ply=bool(gsplat_use_small_ply),
                     debug_fn=debug_fn,
                 )
                 or {}
             )
-        except Exception:
+        except Exception as e:
+            try:
+                if debug_fn:
+                    debug_fn(f"GSPLAT: upload_and_create_view 失败（跳过） | err={str(e)}")
+            except Exception:
+                pass
             gsplat_meta = {}
 
     return {

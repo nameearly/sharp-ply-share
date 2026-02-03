@@ -55,7 +55,17 @@ class PipelineConfig:
 
 def _control_path(cfg: PipelineConfig, name: str) -> str:
     base = cfg.control_dir if cfg.control_dir else cfg.save_dir
-    return os.path.join(base, name)
+    base_abs = os.path.abspath(str(base))
+    n = str(name or "")
+    try:
+        if os.path.isabs(n):
+            n = os.path.basename(n)
+        p = os.path.normpath(os.path.join(base_abs, n))
+        if os.path.commonpath([p, base_abs]) != base_abs:
+            p = os.path.join(base_abs, os.path.basename(n))
+        return p
+    except Exception:
+        return os.path.join(base_abs, os.path.basename(n))
 
 
 def pause_requested(cfg: PipelineConfig) -> bool:
@@ -147,6 +157,11 @@ def upload_worker(
             upload_q.task_done()
             break
         try:
+            with lock:
+                counters["upload_inflight"] = int(counters.get("upload_inflight", 0)) + 1
+        except Exception:
+            pass
+        try:
             if not cfg.hf_upload:
                 upload_q.task_done()
                 continue
@@ -209,9 +224,14 @@ def upload_worker(
 
             if to_delete:
                 try:
-                    ap = os.path.abspath(str(to_delete))
-                    ga = os.path.abspath(str(cfg.gaussians_dir))
-                    if ap.startswith(ga) and os.path.isfile(ap):
+                    ap = os.path.normcase(os.path.abspath(str(to_delete)))
+                    ga = os.path.normcase(os.path.abspath(str(cfg.gaussians_dir)))
+                    inside = False
+                    try:
+                        inside = os.path.commonpath([ap, ga]) == ga
+                    except Exception:
+                        inside = False
+                    if inside and os.path.isfile(ap):
                         os.remove(ap)
                 except Exception:
                     pass
@@ -228,6 +248,11 @@ def upload_worker(
         except Exception as e:
             debug_fn(f"HF 上传失败（可重试） | err={str(e)}")
         finally:
+            try:
+                with lock:
+                    counters["upload_inflight"] = max(0, int(counters.get("upload_inflight", 0)) - 1)
+            except Exception:
+                pass
             upload_q.task_done()
 
 
@@ -236,6 +261,8 @@ def predict_worker(
     stop_event: threading.Event,
     image_q: queue.Queue,
     upload_q: queue.Queue,
+    counters: dict,
+    lock: threading.Lock,
     run_sharp_predict_once_fn,
     debug_fn,
 ):
@@ -251,10 +278,21 @@ def predict_worker(
             image_q.task_done()
             break
         try:
+            with lock:
+                counters["predict_inflight"] = int(counters.get("predict_inflight", 0)) + 1
+        except Exception:
+            pass
+        try:
             image_id = item["image_id"]
             image_path = item["image_path"]
             meta = item.get("meta") if isinstance(item, dict) else None
-            debug_fn(f"ml-sharp | id={image_id} | input={image_path}")
+            try:
+                if bool(getattr(run_sharp_predict_once_fn, "_skip_predict", False)):
+                    debug_fn(f"SKIP_PREDICT | id={image_id} | input={image_path}")
+                else:
+                    debug_fn(f"ml-sharp | id={image_id} | input={image_path}")
+            except Exception:
+                debug_fn(f"ml-sharp | id={image_id} | input={image_path}")
             plys = run_sharp_predict_once_fn(image_path)
             for ply_path in plys or []:
                 if cfg.hf_upload:
@@ -267,6 +305,11 @@ def predict_worker(
                         }
                     )
         finally:
+            try:
+                with lock:
+                    counters["predict_inflight"] = max(0, int(counters.get("predict_inflight", 0)) - 1)
+            except Exception:
+                pass
             image_q.task_done()
 
 
@@ -291,6 +334,8 @@ def download_loop(
     active_range_start_page = None
     active_range_end_page = None
     range_progress = None
+    active_range_acquired_ts = None
+    last_range_meta_ts = 0.0
 
     while (not stop_event.is_set()) and scanned < int(cfg.max_scan):
         order_is_oldest = False
@@ -325,25 +370,66 @@ def download_loop(
                         range_pages = int((range_size + int(pp) - 1) // int(pp))
                         range_size = int(range_pages * int(pp))
                         offset = max(0, (int(page) - 1) * int(pp))
-                        range_start = int((offset // range_size) * range_size)
-                        range_end = int(range_start + range_size - 1)
-                        start_page = int(range_start // int(pp)) + 1
-                        end_page = int((range_end // int(pp)) + 1)
-                        if range_coord.try_lock_range(range_start, range_end):
-                            active_range = (range_start, range_end)
-                            active_range_start_page = int(start_page)
-                            active_range_end_page = int(end_page)
-                            range_progress = OrderedProgress(int(range_start), int(range_end), frontier_offset=int(range_start))
-                            if int(page) < int(start_page):
-                                page = int(start_page)
-                        else:
-                            page = int(end_page) + 1
+                        base_idx = int(offset // range_size)
+
+                        # Smarter selection to reduce contention across multiple clients.
+                        # Try several candidate ranges with a deterministic step based on instance id.
+                        step = 1
+                        try:
+                            step = 1 + (abs(hash(str(getattr(range_coord, 'instance_id', '')))) % 3)
+                        except Exception:
+                            step = 1
+
+                        acquired = False
+                        last_end_page = None
+                        for i in range(0, 6):
+                            cand_idx = int(base_idx + i * step)
+                            range_start = int(cand_idx * range_size)
+                            range_end = int(range_start + range_size - 1)
+                            start_page = int(range_start // int(pp)) + 1
+                            end_page = int((range_end // int(pp)) + 1)
+                            last_end_page = int(end_page)
+                            if range_coord.try_lock_range(range_start, range_end):
+                                active_range = (range_start, range_end)
+                                active_range_start_page = int(start_page)
+                                active_range_end_page = int(end_page)
+                                active_range_acquired_ts = time.time()
+                                range_progress = OrderedProgress(
+                                    int(range_start),
+                                    int(range_end),
+                                    frontier_offset=int(range_start),
+                                )
+
+                                # Restore persisted progress if available.
+                                try:
+                                    p = range_coord.read_progress(int(range_start), int(range_end))
+                                    if isinstance(p, dict) and p:
+                                        range_progress.apply_dict(p)
+                                except Exception:
+                                    pass
+
+                                # Best-effort: align page to restored frontier.
+                                try:
+                                    fp = int(range_progress.frontier // int(pp)) + 1
+                                    if int(page) < int(fp):
+                                        page = int(fp)
+                                except Exception:
+                                    if int(page) < int(start_page):
+                                        page = int(start_page)
+
+                                acquired = True
+                                break
+
+                        if not acquired:
+                            # Couldn't lock any candidates; skip forward.
+                            page = int(last_end_page or int(page)) + 1
                             continue
                     except Exception:
                         active_range = None
                         active_range_start_page = None
                         active_range_end_page = None
                         range_progress = None
+                        active_range_acquired_ts = None
 
             if order_is_oldest and (range_coord is not None) and (active_range is not None) and (active_range_end_page is not None) and (range_progress is not None):
                 try:
@@ -363,6 +449,27 @@ def download_loop(
                 except Exception:
                     pass
 
+                # Persist progress + keep the range lock alive.
+                try:
+                    now = time.time()
+                    if (now - float(last_range_meta_ts)) >= 1.0:
+                        last_range_meta_ts = float(now)
+                        a, b = active_range
+                        range_coord.heartbeat(
+                            int(a),
+                            int(b),
+                            progress_obj={
+                                **(range_progress.to_dict() if hasattr(range_progress, 'to_dict') else {}),
+                                "page": int(page),
+                                "pp": int(pp),
+                                "active_range_start_page": int(active_range_start_page or 0),
+                                "active_range_end_page": int(active_range_end_page or 0),
+                                "acquired_at": float(active_range_acquired_ts or 0.0),
+                            },
+                        )
+                except Exception:
+                    pass
+
             photos = unsplash.fetch_list_photos(page=page, order_by=order)
         else:
             query = cfg.queries[query_idx % len(cfg.queries)]
@@ -375,6 +482,8 @@ def download_loop(
                 page = 1
                 active_range = None
                 active_range_end_page = None
+                range_progress = None
+                active_range_acquired_ts = None
             else:
                 query_idx += 1
                 if query_idx % len(cfg.queries) == 0:
@@ -557,16 +666,62 @@ def download_loop(
             try:
                 if int(page) > int(active_range_end_page):
                     if downloaded_images >= int(cfg.max_images) or stop_event.is_set() or stop_requested(cfg):
+                        try:
+                            a, b = active_range
+                            range_coord.mark_abandoned_range(int(a), int(b), "stopped_or_max_images")
+                        except Exception:
+                            pass
                         active_range = None
                         active_range_end_page = None
+                        range_progress = None
+                        active_range_acquired_ts = None
                     else:
                         a, b = active_range
+                        try:
+                            if range_progress is not None:
+                                range_coord.write_progress(int(a), int(b), {
+                                    **(range_progress.to_dict() if hasattr(range_progress, 'to_dict') else {}),
+                                    "final_page": int(page),
+                                })
+                        except Exception:
+                            pass
                         range_coord.mark_done_range(int(a), int(b))
                         active_range = None
                         active_range_end_page = None
+                        range_progress = None
+                        active_range_acquired_ts = None
             except Exception:
                 active_range = None
                 active_range_end_page = None
+                range_progress = None
+                active_range_acquired_ts = None
+
+    # If we exit early while holding a range (did not reach mark_done_range), record it for observability.
+    if (active_range is not None) and (range_coord is not None):
+        try:
+            a, b = active_range
+            reason = "loop_exit"
+            if downloaded_images >= int(cfg.max_images):
+                reason = "max_images"
+            elif scanned >= int(cfg.max_scan):
+                reason = "max_scan"
+            elif stop_event.is_set() or stop_requested(cfg):
+                reason = "stopped"
+            elif cfg.stop_on_rate_limit and unsplash.is_rate_limited():
+                reason = "rate_limited"
+
+            try:
+                if range_progress is not None:
+                    range_coord.write_progress(int(a), int(b), {
+                        **(range_progress.to_dict() if hasattr(range_progress, 'to_dict') else {}),
+                        "final_reason": str(reason),
+                        "final_page": int(page),
+                    })
+            except Exception:
+                pass
+            range_coord.mark_abandoned_range(int(a), int(b), str(reason))
+        except Exception:
+            pass
 
 
 def run(
@@ -587,7 +742,7 @@ def run(
 
     image_q = queue.Queue(maxsize=max(1, int(cfg.download_queue_max)))
     upload_q = queue.Queue(maxsize=max(1, int(cfg.upload_queue_max)))
-    counters = {"uploaded": 0, "keep_plys": deque()}
+    counters = {"uploaded": 0, "keep_plys": deque(), "predict_inflight": 0, "upload_inflight": 0}
     lock = threading.Lock()
 
     upload_threads = []
@@ -615,7 +770,7 @@ def run(
 
     predict_t = threading.Thread(
         target=predict_worker,
-        args=(cfg, stop_event, image_q, upload_q, run_sharp_predict_once_fn, debug_fn),
+        args=(cfg, stop_event, image_q, upload_q, counters, lock, run_sharp_predict_once_fn, debug_fn),
         daemon=True,
     )
     predict_t.start()
@@ -639,7 +794,16 @@ def run(
                 )
                 while (not stop_event.is_set()) and (not stop_requested(cfg)):
                     wait_if_paused(cfg, stop_event)
-                    if image_q.empty() and (not cfg.hf_upload or upload_q.empty()):
+                    try:
+                        with lock:
+                            pi = int(counters.get("predict_inflight", 0))
+                            ui = int(counters.get("upload_inflight", 0))
+                    except Exception:
+                        pi = 0
+                        ui = 0
+
+                    uploads_idle = (not cfg.hf_upload) or (upload_q.empty() and ui <= 0)
+                    if image_q.empty() and pi <= 0 and uploads_idle:
                         return
                     idle_sleep(cfg)
                 return

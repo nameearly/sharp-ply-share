@@ -27,6 +27,9 @@ Each row in `data/train.jsonl` is a JSON object with stable (string) types for f
 | `ply_url` | `string` | Hugging Face `resolve` URL for the Gaussian Splat PLY (ml-sharp export). |
 | `spz_url` | `string` | Hugging Face `resolve` URL for the SPZ (may be empty if not exported). |
 | `gsplat_url` | `string` | Public viewer URL on `https://gsplat.org/viewer/<shareId>` (may be empty if not uploaded). |
+| `gsplat_share_id` | `string` | Share id on gsplat.org (may be empty). |
+| `gsplat_order_id` | `string` | Order id on gsplat.org (may be empty). |
+| `gsplat_model_file_url` | `string` | gsplat.org internal file URL returned by upload endpoints (may be empty). |
 | `tags` | `string` | Space-separated tags (derived from Unsplash tags). |
 | `topics` | `string` | Space-separated topics (often empty). |
 | `tags_text` | `string` | Same as `tags` (kept for backwards compatibility / full-text search). |
@@ -56,3 +59,9 @@ TL;DR: you can do pretty much anything with Unsplash images (including commercia
 Attribution is not required, but appreciated.
 
 One image to one ply, not high-quality, just for fun.
+
+## Pipeline notes (gsplat)
+
+- The pipeline can optionally upload a (potentially reduced) PLY to https://gsplat.org and record a public viewer link in `gsplat_url`.
+- By default it first runs `splat-transform` to generate a smaller `*.small.gsplat.ply` before uploading.
+- You can disable this behavior by setting `GSPLAT_USE_SMALL_PLY=0`.
