@@ -11,6 +11,11 @@ configs:
 - The Dataset Viewer is configured to read `data/train.jsonl` (see the `configs:` section in the YAML header above).
 - The actual assets (JPG / PLY / SPZ) are stored under `unsplash/<image_id>/`.
 
+## Links
+
+- GitHub (pipeline code): https://github.com/nameearly/sharp-ply-share
+- Hugging Face (dataset): https://huggingface.co/datasets/eatmorefruit/sharp-ply-share
+
 ## Data fields
 
 Each row in `data/train.jsonl` is a JSON object with stable (string) types for fields that commonly drift (to keep the Dataset Viewer working reliably).
