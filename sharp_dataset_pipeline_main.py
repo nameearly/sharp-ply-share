@@ -139,7 +139,7 @@ GSPLAT_BASE = _env_str("GSPLAT_BASE", "https://gsplat.org").strip().rstrip("/")
 GSPLAT_EXPIRATION_TYPE = _env_str("GSPLAT_EXPIRATION_TYPE", "1week").strip()
 GSPLAT_FILTER_VISIBILITY = _env_int("GSPLAT_FILTER_VISIBILITY", 20000)
 SPLAT_TRANSFORM_BIN = _env_str("SPLAT_TRANSFORM_BIN", "splat-transform").strip()
-GSPLAT_USE_SMALL_PLY = _env_flag("GSPLAT_USE_SMALL_PLY", True)
+GSPLAT_USE_SMALL_PLY = _env_flag("GSPLAT_USE_SMALL_PLY", False)
 
 GSBOX_SPZ_QUALITY = _env_int("GSBOX_SPZ_QUALITY", 5)
 GSBOX_SPZ_VERSION = _env_int("GSBOX_SPZ_VERSION", 0)
@@ -253,11 +253,17 @@ def _list_gaussian_plys():
     try:
         if not os.path.exists(GAUSSIANS_DIR):
             return set()
-        return set(
-            os.path.join(GAUSSIANS_DIR, f)
-            for f in os.listdir(GAUSSIANS_DIR)
-            if f.lower().endswith(".ply")
-        )
+        out = set()
+        for f in os.listdir(GAUSSIANS_DIR):
+            low = str(f).lower()
+            if not low.endswith(".ply"):
+                continue
+            if ".small.gsplat" in low:
+                continue
+            if ".vertexonly.binary" in low:
+                continue
+            out.add(os.path.join(GAUSSIANS_DIR, f))
+        return out
     except Exception:
         return set()
 
@@ -265,6 +271,19 @@ def _list_gaussian_plys():
 def _run_sharp_predict_once(input_path):
     extra = ["-v"] if SHARP_VERBOSE else []
     plys_before = _list_gaussian_plys()
+
+    def _sig(p: str):
+        try:
+            st = os.stat(p)
+            return (int(st.st_size), int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))))
+        except Exception:
+            return None
+
+    before_sig = {}
+    try:
+        before_sig = {p: _sig(p) for p in (plys_before or set())}
+    except Exception:
+        before_sig = {}
 
     _append_gpu_log("before_predict", input_path)
 
@@ -319,8 +338,30 @@ def _run_sharp_predict_once(input_path):
     produced = []
     try:
         plys_after = _list_gaussian_plys()
-        candidates = (plys_after - (plys_before or set())) or plys_after
-        produced = sorted(candidates)
+        after_sig = {p: _sig(p) for p in (plys_after or set())}
+        candidates = []
+        for p, s in after_sig.items():
+            if p not in before_sig:
+                candidates.append(p)
+                continue
+            if (s is not None) and (before_sig.get(p) != s):
+                candidates.append(p)
+        produced = sorted(candidates) if candidates else []
+
+        if not produced:
+            try:
+                base = os.path.splitext(os.path.basename(str(input_path)))[0]
+                exp = os.path.join(GAUSSIANS_DIR, base + ".ply")
+                low = os.path.basename(exp).lower()
+                if (
+                    os.path.isfile(exp)
+                    and os.path.getsize(exp) > 0
+                    and (".small.gsplat" not in low)
+                    and (".vertexonly.binary" not in low)
+                ):
+                    produced = [exp]
+            except Exception:
+                produced = []
     except Exception:
         produced = []
 

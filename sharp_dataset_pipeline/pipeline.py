@@ -2,6 +2,8 @@ import os
 import time
 import threading
 import queue
+import signal
+import traceback
 from collections import deque
 from dataclasses import dataclass
 
@@ -133,6 +135,22 @@ def gate(cfg: PipelineConfig, stop_event: threading.Event) -> bool:
     return True
 
 
+def _log_exc(debug_fn, msg: str, e: BaseException | None = None) -> None:
+    try:
+        if debug_fn is None:
+            return
+        if e is not None:
+            debug_fn(f"{msg} | err={type(e).__name__}: {str(e)}")
+            tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+        else:
+            debug_fn(str(msg))
+            tb = traceback.format_exc()
+        if tb:
+            debug_fn(tb.rstrip())
+    except Exception:
+        pass
+
+
 def upload_worker(
     cfg: PipelineConfig,
     stop_event: threading.Event,
@@ -154,6 +172,11 @@ def upload_worker(
         except Exception:
             continue
         if task is None:
+            upload_q.task_done()
+            break
+
+        wait_if_paused(cfg, stop_event)
+        if stop_event.is_set() or stop_requested(cfg):
             upload_q.task_done()
             break
         try:
@@ -205,8 +228,8 @@ def upload_worker(
                             if isinstance(meta, dict):
                                 row.update(meta)
                             index_sync.add_row(row)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _log_exc(debug_fn, f"写入 index 失败 | id={str(task.get('image_id'))}", e)
 
             to_delete = None
             if cfg.ply_delete_after_upload and int(cfg.ply_keep_last) > 0:
@@ -245,8 +268,18 @@ def upload_worker(
             if do_squash:
                 debug_fn(f"触发 HF super-squash | uploaded={uploaded}")
                 threading.Thread(target=try_super_squash_fn, args=(cfg.hf_repo_id,), daemon=True).start()
+        except KeyboardInterrupt:
+            try:
+                touch_stop_file(cfg)
+            except Exception:
+                pass
+            stop_event.set()
+            try:
+                debug_fn(f"Ctrl+C: HF 上传中断，进入停止流程 | stop_file={_stop_file_path(cfg)}")
+            except Exception:
+                pass
         except Exception as e:
-            debug_fn(f"HF 上传失败（可重试） | err={str(e)}")
+            _log_exc(debug_fn, "HF 上传失败（可重试）", e)
         finally:
             try:
                 with lock:
@@ -277,6 +310,11 @@ def predict_worker(
         if item is None:
             image_q.task_done()
             break
+
+        wait_if_paused(cfg, stop_event)
+        if stop_event.is_set() or stop_requested(cfg):
+            image_q.task_done()
+            break
         try:
             with lock:
                 counters["predict_inflight"] = int(counters.get("predict_inflight", 0)) + 1
@@ -293,7 +331,22 @@ def predict_worker(
                     debug_fn(f"ml-sharp | id={image_id} | input={image_path}")
             except Exception:
                 debug_fn(f"ml-sharp | id={image_id} | input={image_path}")
-            plys = run_sharp_predict_once_fn(image_path)
+            try:
+                plys = run_sharp_predict_once_fn(image_path)
+            except KeyboardInterrupt:
+                try:
+                    touch_stop_file(cfg)
+                except Exception:
+                    pass
+                stop_event.set()
+                try:
+                    debug_fn(f"Ctrl+C: predict 中断，进入停止流程 | stop_file={_stop_file_path(cfg)}")
+                except Exception:
+                    pass
+                plys = []
+            except Exception as e:
+                _log_exc(debug_fn, f"predict 失败 | id={str(image_id)} | input={str(image_path)}", e)
+                plys = []
             for ply_path in plys or []:
                 if cfg.hf_upload:
                     upload_q.put(
@@ -740,6 +793,42 @@ def run(
 ):
     stop_event = threading.Event()
 
+    prev_sigint_handler = None
+    sigint_state = {"last": 0.0}
+    try:
+        prev_sigint_handler = signal.getsignal(signal.SIGINT)
+
+        def _on_sigint(_signum, _frame):
+            try:
+                now = time.time()
+                last = float(sigint_state.get("last", 0.0) or 0.0)
+                sigint_state["last"] = float(now)
+                if pause_requested(cfg) or ((now - last) <= float(cfg.sigint_window_s)):
+                    touch_stop_file(cfg)
+                    stop_event.set()
+                    try:
+                        if debug_fn:
+                            debug_fn(f"SIGINT: stop requested | stop_file={_stop_file_path(cfg)}")
+                    except Exception:
+                        pass
+                else:
+                    set_pause_file(cfg, True)
+                    try:
+                        if debug_fn:
+                            debug_fn(f"SIGINT: pause requested | pause_file={_pause_file_path(cfg)}")
+                    except Exception:
+                        pass
+            except Exception:
+                try:
+                    touch_stop_file(cfg)
+                    stop_event.set()
+                except Exception:
+                    pass
+
+        signal.signal(signal.SIGINT, _on_sigint)
+    except Exception:
+        prev_sigint_handler = None
+
     image_q = queue.Queue(maxsize=max(1, int(cfg.download_queue_max)))
     upload_q = queue.Queue(maxsize=max(1, int(cfg.upload_queue_max)))
     counters = {"uploaded": 0, "keep_plys": deque(), "predict_inflight": 0, "upload_inflight": 0}
@@ -809,22 +898,59 @@ def run(
                 return
             except KeyboardInterrupt:
                 now = time.time()
+                try:
+                    with lock:
+                        pi = int(counters.get("predict_inflight", 0))
+                        ui = int(counters.get("upload_inflight", 0))
+                except Exception:
+                    pi = 0
+                    ui = 0
+                try:
+                    iq = int(getattr(image_q, "qsize", lambda: -1)())
+                except Exception:
+                    iq = -1
+                try:
+                    uq = int(getattr(upload_q, "qsize", lambda: -1)())
+                except Exception:
+                    uq = -1
+
+                # If we're already paused, treat Ctrl+C as a stop request.
+                if pause_requested(cfg):
+                    debug_fn(
+                        f"Ctrl+C：暂停中再次触发 -> 停止并退出（创建 STOP） | stop_file={_stop_file_path(cfg)} | pause_file={_pause_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
+                    )
+                    touch_stop_file(cfg)
+                    stop_event.set()
+                    break
+
                 if now - last_sigint_ts <= float(cfg.sigint_window_s):
-                    debug_fn("Ctrl+C 二次触发：停止并退出（创建 STOP）")
+                    debug_fn(
+                        f"Ctrl+C 二次触发：停止并退出（创建 STOP） | stop_file={_stop_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
+                    )
                     touch_stop_file(cfg)
                     stop_event.set()
                     break
                 last_sigint_ts = now
-                paused = pause_requested(cfg)
-                if paused:
-                    set_pause_file(cfg, False)
-                    debug_fn("Ctrl+C：继续（移除 PAUSE）。再次 Ctrl+C 将停止")
-                else:
-                    set_pause_file(cfg, True)
-                    debug_fn("Ctrl+C：暂停（创建 PAUSE）。再次 Ctrl+C 将停止")
+                set_pause_file(cfg, True)
+                debug_fn(
+                    f"Ctrl+C：暂停（创建 PAUSE） | pause_file={_pause_file_path(cfg)} | 再次 Ctrl+C 将停止 | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
+                )
                 idle_sleep(cfg)
+            except Exception as e:
+                _log_exc(debug_fn, "run loop 未预料异常：停止并退出", e)
+                try:
+                    touch_stop_file(cfg)
+                except Exception:
+                    pass
+                stop_event.set()
+                break
     finally:
         stop_event.set()
+        try:
+            if prev_sigint_handler is not None:
+                signal.signal(signal.SIGINT, prev_sigint_handler)
+        except Exception:
+            pass
         try:
             image_q.put(None)
         except Exception:

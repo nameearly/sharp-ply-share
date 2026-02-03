@@ -17,6 +17,14 @@ def make_small_ply(
         src = os.path.abspath(str(ply_path))
         if not os.path.isfile(src):
             return None
+        try:
+            low = os.path.basename(src).lower()
+            if ".small.gsplat" in low:
+                return src
+            if ".vertexonly.binary" in low:
+                return src
+        except Exception:
+            pass
         base, _ = os.path.splitext(src)
         out = base + ".small.gsplat.ply"
         if os.path.isfile(out) and os.path.getsize(out) > 0:
@@ -337,7 +345,7 @@ def upload_and_create_view(
     filter_visibility: int,
     title: str,
     description: str = "",
-    use_small_ply: bool = True,
+    use_small_ply: bool = False,
     debug_fn,
 ) -> dict | None:
     try:

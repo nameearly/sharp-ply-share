@@ -47,6 +47,12 @@ This pipeline supports cooperative pause/stop through files under `CONTROL_DIR`:
 - Pause: create a `PAUSE` file (configurable via `PAUSE_FILE`)
 - Stop: create a `STOP` file (configurable via `STOP_FILE`)
 
+Notes:
+
+- `Ctrl+C` is handled cooperatively (safe-point semantics): the pipeline will avoid hard-killing in-flight work and will stop as soon as it reaches the next check.
+- `Ctrl+C` once will request pause (create `PAUSE`).
+- If already paused (or if you press `Ctrl+C` again within `SIGINT_WINDOW_S`), it will request stop (create `STOP`).
+
 Defaults:
 
 - `CONTROL_DIR=<SAVE_DIR>`
@@ -85,6 +91,10 @@ Defaults:
 - `UPLOAD_QUEUE_MAX` (default: `256`)
 - `UPLOAD_WORKERS` (default: `2`)
 
+### Logging / debugging
+
+- The pipeline logs unexpected exceptions with full tracebacks (especially inside worker threads) to help debug rare/unanticipated issues.
+
 ### Hugging Face upload
 
 - `HF_UPLOAD`: enable upload (default: `1`)
@@ -110,7 +120,7 @@ Defaults:
 - `GSPLAT_EXPIRATION_TYPE`: `1week` / etc (default: `1week`)
 - `GSPLAT_FILTER_VISIBILITY`: visibility filter passed to `splat-transform` (default: `20000`)
 - `SPLAT_TRANSFORM_BIN`: `splat-transform` path (default: `splat-transform`)
-- `GSPLAT_USE_SMALL_PLY`: generate `*.small.gsplat.ply` before upload (default: `1`); set `0` to upload the original PLY
+- `GSPLAT_USE_SMALL_PLY`: generate `*.small.gsplat.ply` before upload (default: `0`); set `1` to enable
 
 ### Range locks (for `SOURCE=list` + `order_by=oldest`)
 

@@ -18,7 +18,7 @@ def upload_sample_pair(
     gsplat_expiration_type: str = "1week",
     gsplat_filter_visibility: int = 20000,
     splat_transform_bin: str = "splat-transform",
-    gsplat_use_small_ply: bool = True,
+    gsplat_use_small_ply: bool = False,
     spz_enabled: bool,
     spz_tool: str,
     gsbox_bin: str,

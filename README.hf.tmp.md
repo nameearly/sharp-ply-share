@@ -63,5 +63,11 @@ One image to one ply, not high-quality, just for fun.
 ## Pipeline notes (gsplat)
 
 - The pipeline can optionally upload a (potentially reduced) PLY to https://gsplat.org and record a public viewer link in `gsplat_url`.
-- By default it first runs `splat-transform` to generate a smaller `*.small.gsplat.ply` before uploading.
-- You can disable this behavior by setting `GSPLAT_USE_SMALL_PLY=0`.
+- By default it uploads the original PLY.
+- You can enable generating a smaller `*.small.gsplat.ply` via `splat-transform` by setting `GSPLAT_USE_SMALL_PLY=1`.
+
+## Pipeline notes (Ctrl+C / pause / stop)
+
+- `Ctrl+C` requests a cooperative pause (creates `PAUSE`) and the pipeline will stop at the next safe point.
+- Press `Ctrl+C` again (or press once while already paused) to request stop (creates `STOP`).
+- Unexpected exceptions (especially in worker threads) are logged with full tracebacks to simplify debugging.
