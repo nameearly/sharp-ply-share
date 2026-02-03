@@ -50,8 +50,9 @@ This pipeline supports cooperative pause/stop through files under `CONTROL_DIR`:
 Notes:
 
 - `Ctrl+C` is handled cooperatively (safe-point semantics): the pipeline will avoid hard-killing in-flight work and will stop as soon as it reaches the next check.
-- `Ctrl+C` once will request pause (create `PAUSE`).
-- If already paused (or if you press `Ctrl+C` again within `SIGINT_WINDOW_S`), it will request stop (create `STOP`).
+- `Ctrl+C` toggles pause/resume by creating or deleting `PAUSE`.
+- `Ctrl+D` requests stop/exit by creating `STOP`. On Windows consoles, `Ctrl+Z` is also accepted as an exit shortcut.
+- `STOP` is terminal for the current run: if `STOP` exists, the pipeline will exit. To continue processing, delete `STOP` and restart the pipeline.
 
 Defaults:
 

@@ -68,6 +68,6 @@ One image to one ply, not high-quality, just for fun.
 
 ## Pipeline notes (Ctrl+C / pause / stop)
 
-- `Ctrl+C` requests a cooperative pause (creates `PAUSE`) and the pipeline will stop at the next safe point.
-- Press `Ctrl+C` again (or press once while already paused) to request stop (creates `STOP`).
+- `Ctrl+C` toggles cooperative pause/resume (creates or deletes `PAUSE`).
+- `Ctrl+D` requests stop/exit (creates `STOP`). On Windows consoles, `Ctrl+Z` is also accepted as an exit shortcut.
 - Unexpected exceptions (especially in worker threads) are logged with full tracebacks to simplify debugging.

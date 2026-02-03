@@ -704,6 +704,9 @@ def download_loop(
                     break
                 idle_sleep(cfg)
 
+            if not gate(cfg, stop_event):
+                break
+
             image_q.put({"image_id": photo_id, "image_path": out_path, "meta": meta})
             try:
                 with lock:
@@ -793,7 +796,47 @@ def run(
 ):
     stop_event = threading.Event()
 
+    image_q = queue.Queue(maxsize=max(1, int(cfg.download_queue_max)))
+    upload_q = queue.Queue(maxsize=max(1, int(cfg.upload_queue_max)))
+    counters = {"uploaded": 0, "keep_plys": deque(), "predict_inflight": 0, "upload_inflight": 0}
+    lock = threading.Lock()
+
+    def _snapshot():
+        try:
+            with lock:
+                pi = int(counters.get("predict_inflight", 0))
+                ui = int(counters.get("upload_inflight", 0))
+        except Exception:
+            pi = 0
+            ui = 0
+        try:
+            iq = int(getattr(image_q, "qsize", lambda: -1)())
+        except Exception:
+            iq = -1
+        try:
+            uq = int(getattr(upload_q, "qsize", lambda: -1)())
+        except Exception:
+            uq = -1
+        return iq, uq, pi, ui
+
+    def _request_stop(reason: str):
+        try:
+            touch_stop_file(cfg)
+        except Exception:
+            pass
+        stop_event.set()
+        try:
+            if debug_fn:
+                iq, uq, pi, ui = _snapshot()
+                debug_fn(
+                    f"STOP requested | reason={str(reason)} | stop_file={_stop_file_path(cfg)} | pause_file={_pause_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
+                )
+        except Exception:
+            pass
+
     prev_sigint_handler = None
+    prev_sigterm_handler = None
+    prev_sigbreak_handler = None
     sigint_state = {"last": 0.0}
     try:
         prev_sigint_handler = signal.getsignal(signal.SIGINT)
@@ -801,38 +844,76 @@ def run(
         def _on_sigint(_signum, _frame):
             try:
                 now = time.time()
-                last = float(sigint_state.get("last", 0.0) or 0.0)
                 sigint_state["last"] = float(now)
-                if pause_requested(cfg) or ((now - last) <= float(cfg.sigint_window_s)):
-                    touch_stop_file(cfg)
-                    stop_event.set()
+                paused = bool(pause_requested(cfg))
+                if paused:
+                    set_pause_file(cfg, False)
                     try:
                         if debug_fn:
-                            debug_fn(f"SIGINT: stop requested | stop_file={_stop_file_path(cfg)}")
+                            iq, uq, pi, ui = _snapshot()
+                            debug_fn(
+                                f"SIGINT: resume requested | pause_file={_pause_file_path(cfg)} | stop_file={_stop_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
+                            )
                     except Exception:
                         pass
                 else:
                     set_pause_file(cfg, True)
                     try:
                         if debug_fn:
-                            debug_fn(f"SIGINT: pause requested | pause_file={_pause_file_path(cfg)}")
+                            iq, uq, pi, ui = _snapshot()
+                            debug_fn(
+                                f"SIGINT: pause requested | pause_file={_pause_file_path(cfg)} | stop_file={_stop_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
+                            )
                     except Exception:
                         pass
             except Exception:
-                try:
-                    touch_stop_file(cfg)
-                    stop_event.set()
-                except Exception:
-                    pass
+                _request_stop("sigint_handler_error")
 
         signal.signal(signal.SIGINT, _on_sigint)
+
+        try:
+            prev_sigterm_handler = signal.getsignal(signal.SIGTERM)
+
+            def _on_sigterm(_signum, _frame):
+                _request_stop("SIGTERM")
+
+            signal.signal(signal.SIGTERM, _on_sigterm)
+        except Exception:
+            prev_sigterm_handler = None
+
+        try:
+            if hasattr(signal, "SIGBREAK"):
+                prev_sigbreak_handler = signal.getsignal(signal.SIGBREAK)
+
+                def _on_sigbreak(_signum, _frame):
+                    _request_stop("SIGBREAK")
+
+                signal.signal(signal.SIGBREAK, _on_sigbreak)
+        except Exception:
+            prev_sigbreak_handler = None
     except Exception:
         prev_sigint_handler = None
+        prev_sigterm_handler = None
+        prev_sigbreak_handler = None
 
-    image_q = queue.Queue(maxsize=max(1, int(cfg.download_queue_max)))
-    upload_q = queue.Queue(maxsize=max(1, int(cfg.upload_queue_max)))
-    counters = {"uploaded": 0, "keep_plys": deque(), "predict_inflight": 0, "upload_inflight": 0}
-    lock = threading.Lock()
+    try:
+        import msvcrt
+
+        def _key_loop():
+            while (not stop_event.is_set()) and (not stop_requested(cfg)):
+                try:
+                    if msvcrt.kbhit():
+                        ch = msvcrt.getwch()
+                        if ch in ("\x04", "\x1a"):
+                            _request_stop("CTRL_D")
+                            break
+                    time.sleep(0.1)
+                except Exception:
+                    time.sleep(0.2)
+
+        threading.Thread(target=_key_loop, daemon=True).start()
+    except Exception:
+        pass
 
     upload_threads = []
     if cfg.hf_upload:
@@ -897,44 +978,24 @@ def run(
                     idle_sleep(cfg)
                 return
             except KeyboardInterrupt:
-                now = time.time()
                 try:
-                    with lock:
-                        pi = int(counters.get("predict_inflight", 0))
-                        ui = int(counters.get("upload_inflight", 0))
-                except Exception:
-                    pi = 0
-                    ui = 0
-                try:
-                    iq = int(getattr(image_q, "qsize", lambda: -1)())
-                except Exception:
-                    iq = -1
-                try:
-                    uq = int(getattr(upload_q, "qsize", lambda: -1)())
-                except Exception:
-                    uq = -1
-
-                # If we're already paused, treat Ctrl+C as a stop request.
-                if pause_requested(cfg):
-                    debug_fn(
-                        f"Ctrl+C：暂停中再次触发 -> 停止并退出（创建 STOP） | stop_file={_stop_file_path(cfg)} | pause_file={_pause_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
-                    )
-                    touch_stop_file(cfg)
-                    stop_event.set()
+                    paused = bool(pause_requested(cfg))
+                    if paused:
+                        set_pause_file(cfg, False)
+                        iq, uq, pi, ui = _snapshot()
+                        debug_fn(
+                            f"Ctrl+C：恢复（删除 PAUSE） | pause_file={_pause_file_path(cfg)} | stop_file={_stop_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
+                        )
+                    else:
+                        set_pause_file(cfg, True)
+                        iq, uq, pi, ui = _snapshot()
+                        debug_fn(
+                            f"Ctrl+C：暂停（创建 PAUSE） | pause_file={_pause_file_path(cfg)} | stop_file={_stop_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
+                        )
+                except Exception as e:
+                    _log_exc(debug_fn, "Ctrl+C 处理失败：停止并退出", e)
+                    _request_stop("keyboardinterrupt_error")
                     break
-
-                if now - last_sigint_ts <= float(cfg.sigint_window_s):
-                    debug_fn(
-                        f"Ctrl+C 二次触发：停止并退出（创建 STOP） | stop_file={_stop_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
-                    )
-                    touch_stop_file(cfg)
-                    stop_event.set()
-                    break
-                last_sigint_ts = now
-                set_pause_file(cfg, True)
-                debug_fn(
-                    f"Ctrl+C：暂停（创建 PAUSE） | pause_file={_pause_file_path(cfg)} | 再次 Ctrl+C 将停止 | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
-                )
                 idle_sleep(cfg)
             except Exception as e:
                 _log_exc(debug_fn, "run loop 未预料异常：停止并退出", e)
@@ -949,6 +1010,16 @@ def run(
         try:
             if prev_sigint_handler is not None:
                 signal.signal(signal.SIGINT, prev_sigint_handler)
+        except Exception:
+            pass
+        try:
+            if prev_sigterm_handler is not None:
+                signal.signal(signal.SIGTERM, prev_sigterm_handler)
+        except Exception:
+            pass
+        try:
+            if prev_sigbreak_handler is not None and hasattr(signal, "SIGBREAK"):
+                signal.signal(signal.SIGBREAK, prev_sigbreak_handler)
         except Exception:
             pass
         try:
