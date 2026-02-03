@@ -4,6 +4,7 @@ import threading
 import queue
 import signal
 import traceback
+import glob
 from collections import deque
 from dataclasses import dataclass
 
@@ -249,6 +250,22 @@ def upload_worker(
                 try:
                     ap = os.path.normcase(os.path.abspath(str(to_delete)))
                     ga = os.path.normcase(os.path.abspath(str(cfg.gaussians_dir)))
+
+                    def _inside(p: str, root: str) -> bool:
+                        try:
+                            return os.path.commonpath([p, root]) == root
+                        except Exception:
+                            return False
+
+                    def _try_remove(p: str, root: str):
+                        try:
+                            pp = os.path.normcase(os.path.abspath(str(p)))
+                            rr = os.path.normcase(os.path.abspath(str(root)))
+                            if _inside(pp, rr) and os.path.isfile(pp):
+                                os.remove(pp)
+                        except Exception as e:
+                            _log_exc(debug_fn, f"本地清理失败 | path={str(p)}", e)
+
                     inside = False
                     try:
                         inside = os.path.commonpath([ap, ga]) == ga
@@ -256,6 +273,50 @@ def upload_worker(
                         inside = False
                     if inside and os.path.isfile(ap):
                         os.remove(ap)
+
+                    try:
+                        base = os.path.splitext(os.path.basename(ap))[0]
+                    except Exception:
+                        base = None
+
+                    canon = base
+                    try:
+                        if canon:
+                            changed = True
+                            while changed:
+                                changed = False
+                                for suf in [".small.gsplat", ".vertexonly.binary"]:
+                                    if canon.endswith(suf):
+                                        canon = canon[: -len(suf)]
+                                        changed = True
+                    except Exception:
+                        canon = base
+
+                    if canon:
+                        for suf in [
+                            ".spz",
+                            ".vertexonly.binary.ply",
+                            ".small.gsplat.ply",
+                            ".small.gsplat.vertexonly.binary.ply",
+                        ]:
+                            _try_remove(os.path.join(ga, canon + suf), ga)
+
+                        try:
+                            for p in glob.glob(os.path.join(ga, canon + ".small.gsplat.*.ply")):
+                                _try_remove(p, ga)
+                        except Exception:
+                            pass
+
+                        try:
+                            img_root = os.path.normcase(os.path.abspath(str(cfg.input_images_dir)))
+                            save_root = os.path.normcase(os.path.abspath(str(cfg.save_dir)))
+                            if not _inside(img_root, save_root):
+                                img_root = None
+                            for ext in [".jpg", ".jpeg"]:
+                                if img_root:
+                                    _try_remove(os.path.join(img_root, canon + ext), img_root)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
