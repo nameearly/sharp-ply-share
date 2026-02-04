@@ -1,0 +1,41 @@
+name: HF Requests Ingest
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/10 * * * *"  # every 10 minutes
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "huggingface_hub>=0.24.0" requests
+
+      - name: Ingest Discussion -> HF requests/
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HUGGINGFACE_HUB_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID: eatmorefruit/sharp-ply-share
+          HF_REPO_TYPE: dataset
+          REQ_MODE: ingest
+          REQ_ONCE: "1"
+          REQ_DRY_RUN: "0"
+          REQ_WRITE_INDEX: "0"
+          REQ_DISCUSSION_NUM: "2"
+          REQ_DIR: requests
+        run: |
+          python -m sharp_dataset_pipeline.requests_worker
