@@ -12,6 +12,12 @@ _PER_PAGE = 10
 _LIST_PER_PAGE = 30
 _STOP_ON_RATE_LIMIT = True
 
+_KEY_POOL: list[dict] = []
+_KEY_NEXT_API_ALLOWED_TS: list[float] = []
+_KEY_API_BACKOFF_SECONDS: list[float] = []
+_KEY_RATE_LIMITED: list[bool] = []
+_ACTIVE_KEY_IDX: int = 0
+
 _session = requests.Session()
 _next_api_allowed_ts = 0.0
 _api_backoff_seconds = 0.0
@@ -21,7 +27,7 @@ _debug = None
 
 def configure_unsplash(
     *,
-    access_key: str,
+    access_key,
     app_name: str,
     api_base: str,
     per_page: int,
@@ -31,8 +37,53 @@ def configure_unsplash(
 ):
     global _UNSPLASH_ACCESS_KEY, _APP_NAME, _API_BASE
     global _PER_PAGE, _LIST_PER_PAGE, _STOP_ON_RATE_LIMIT, _debug
+    global _KEY_POOL, _KEY_NEXT_API_ALLOWED_TS, _KEY_API_BACKOFF_SECONDS, _KEY_RATE_LIMITED, _ACTIVE_KEY_IDX
+    global _next_api_allowed_ts, _api_backoff_seconds, _rate_limited
 
-    _UNSPLASH_ACCESS_KEY = str(access_key or '').strip() or None
+    pool: list[dict] = []
+    try:
+        if isinstance(access_key, (list, tuple)):
+            for it in (access_key or []):
+                if it is None:
+                    continue
+                if isinstance(it, dict):
+                    k = (
+                        it.get("UNSPLASH_ACCESS_KEY")
+                        or it.get("unsplash_access_key")
+                        or it.get("access_key")
+                        or it.get("key")
+                    )
+                    k = str(k or "").strip()
+                    if not k:
+                        continue
+                    an = (
+                        it.get("UNSPLASH_APP_NAME")
+                        or it.get("unsplash_app_name")
+                        or it.get("app_name")
+                        or app_name
+                    )
+                    an = str(an or "").strip() or str(app_name or "").strip() or _APP_NAME
+                    pool.append({"access_key": k, "app_name": an})
+                else:
+                    k = str(it or "").strip()
+                    if k:
+                        an = str(app_name or "").strip() or _APP_NAME
+                        pool.append({"access_key": k, "app_name": an})
+        else:
+            k = str(access_key or "").strip()
+            if k:
+                an = str(app_name or "").strip() or _APP_NAME
+                pool.append({"access_key": k, "app_name": an})
+    except Exception:
+        pool = []
+
+    _KEY_POOL = list(pool)
+    _KEY_NEXT_API_ALLOWED_TS = [0.0 for _ in _KEY_POOL]
+    _KEY_API_BACKOFF_SECONDS = [0.0 for _ in _KEY_POOL]
+    _KEY_RATE_LIMITED = [False for _ in _KEY_POOL]
+    _ACTIVE_KEY_IDX = 0
+
+    _UNSPLASH_ACCESS_KEY = str((_KEY_POOL[0].get("access_key") if _KEY_POOL else "") or "").strip() or None
     _APP_NAME = str(app_name or '').strip() or _APP_NAME
     _API_BASE = str(api_base or '').strip() or "https://api.unsplash.com"
     try:
@@ -46,13 +97,124 @@ def configure_unsplash(
     _STOP_ON_RATE_LIMIT = bool(stop_on_rate_limit)
     _debug = debug_fn
 
+    _next_api_allowed_ts = 0.0
+    _api_backoff_seconds = 0.0
+    _rate_limited = False
+
+
+def _active_key_obj() -> dict | None:
+    try:
+        if not _KEY_POOL:
+            return None
+        idx = max(0, min(int(_ACTIVE_KEY_IDX), len(_KEY_POOL) - 1))
+        return _KEY_POOL[idx]
+    except Exception:
+        return None
+
+
+def _active_app_name() -> str:
+    try:
+        obj = _active_key_obj()
+        if isinstance(obj, dict):
+            s = str(obj.get("app_name") or "").strip()
+            if s:
+                return s
+        return str(_APP_NAME or "").strip() or "sharp-ply-share"
+    except Exception:
+        return str(_APP_NAME or "").strip() or "sharp-ply-share"
+
+
+def _ensure_key_for_request() -> bool:
+    global _rate_limited, _next_api_allowed_ts, _ACTIVE_KEY_IDX
+    try:
+        if not _KEY_POOL:
+            _rate_limited = True
+            _next_api_allowed_ts = time.time() + 3600.0
+            return False
+
+        now = time.time()
+        try:
+            cur = max(0, min(int(_ACTIVE_KEY_IDX), len(_KEY_POOL) - 1))
+        except Exception:
+            cur = 0
+
+        def _ready(i: int) -> bool:
+            try:
+                return float(_KEY_NEXT_API_ALLOWED_TS[i]) <= float(now)
+            except Exception:
+                return True
+
+        if _ready(cur):
+            try:
+                _KEY_RATE_LIMITED[cur] = False
+            except Exception:
+                pass
+            _rate_limited = False
+            _next_api_allowed_ts = float(now)
+            return True
+
+        best = None
+        best_ts = None
+        for i in range(len(_KEY_POOL)):
+            try:
+                ts = float(_KEY_NEXT_API_ALLOWED_TS[i])
+            except Exception:
+                ts = 0.0
+            if ts <= now:
+                best = i
+                best_ts = ts
+                break
+            if best_ts is None or ts < best_ts:
+                best = i
+                best_ts = ts
+
+        if best is None:
+            best = 0
+            best_ts = float(now) + 3600.0
+
+        prev_idx = int(cur)
+        _ACTIVE_KEY_IDX = int(best)
+        try:
+            if _debug is not None and int(prev_idx) != int(best):
+                _d(
+                    f"Unsplash key rotate | from_idx={int(prev_idx)} to_idx={int(best)} | next_allowed_in_s={round(max(0.0, float(best_ts or 0.0) - float(now)), 2)}"
+                )
+        except Exception:
+            pass
+        try:
+            if float(best_ts or 0.0) <= float(now):
+                _KEY_RATE_LIMITED[best] = False
+        except Exception:
+            pass
+
+        if float(best_ts or 0.0) <= float(now):
+            _rate_limited = False
+            _next_api_allowed_ts = float(now)
+            return True
+
+        _rate_limited = bool(_STOP_ON_RATE_LIMIT)
+        _next_api_allowed_ts = float(best_ts or (now + 3600.0))
+        return False
+    except Exception:
+        _rate_limited = bool(_STOP_ON_RATE_LIMIT)
+        try:
+            _next_api_allowed_ts = time.time() + 3600.0
+        except Exception:
+            _next_api_allowed_ts = 0.0
+        return False
+
 
 def is_rate_limited() -> bool:
+    try:
+        _ensure_key_for_request()
+    except Exception:
+        pass
     return bool(_rate_limited)
 
 
 def rate_limit_wait_s(default_s: float = 3600.0) -> float:
     try:
+        _ensure_key_for_request()
         if not _rate_limited:
             return 0.0
         now = time.time()
@@ -70,6 +232,13 @@ def clear_rate_limited() -> None:
         _rate_limited = False
         _api_backoff_seconds = 0.0
         _next_api_allowed_ts = min(float(_next_api_allowed_ts), time.time() + 0.1)
+        try:
+            for i in range(len(_KEY_POOL)):
+                _KEY_RATE_LIMITED[i] = False
+                _KEY_API_BACKOFF_SECONDS[i] = 0.0
+                _KEY_NEXT_API_ALLOWED_TS[i] = min(float(_KEY_NEXT_API_ALLOWED_TS[i]), time.time() + 0.1)
+        except Exception:
+            pass
     except Exception:
         return
 
@@ -85,6 +254,13 @@ def _d(msg: str) -> None:
 
 def _wait_for_api_slot():
     global _next_api_allowed_ts
+    _ensure_key_for_request()
+    try:
+        if _KEY_POOL:
+            idx = max(0, min(int(_ACTIVE_KEY_IDX), len(_KEY_POOL) - 1))
+            _next_api_allowed_ts = float(_KEY_NEXT_API_ALLOWED_TS[idx])
+    except Exception:
+        pass
     now = time.time()
     wait_s = max(0.0, _next_api_allowed_ts - now)
     if wait_s > 0:
@@ -94,8 +270,17 @@ def _wait_for_api_slot():
 
 def _note_api_request_done(min_interval_s=0.75):
     global _next_api_allowed_ts, _api_backoff_seconds
+    now = time.time()
     _api_backoff_seconds = 0.0
-    _next_api_allowed_ts = time.time() + float(min_interval_s)
+    _next_api_allowed_ts = now + float(min_interval_s)
+    try:
+        if _KEY_POOL:
+            idx = max(0, min(int(_ACTIVE_KEY_IDX), len(_KEY_POOL) - 1))
+            _KEY_API_BACKOFF_SECONDS[idx] = 0.0
+            _KEY_NEXT_API_ALLOWED_TS[idx] = max(float(_KEY_NEXT_API_ALLOWED_TS[idx]), float(_next_api_allowed_ts))
+            _KEY_RATE_LIMITED[idx] = False
+    except Exception:
+        pass
 
 
 def _note_api_rate_limited(response):
@@ -124,6 +309,15 @@ def _note_api_rate_limited(response):
         _api_backoff_seconds = max(_api_backoff_seconds, float(wait_s))
 
     _next_api_allowed_ts = time.time() + float(wait_s)
+    try:
+        if _KEY_POOL:
+            idx = max(0, min(int(_ACTIVE_KEY_IDX), len(_KEY_POOL) - 1))
+            _KEY_NEXT_API_ALLOWED_TS[idx] = max(float(_KEY_NEXT_API_ALLOWED_TS[idx]), float(_next_api_allowed_ts))
+            _KEY_API_BACKOFF_SECONDS[idx] = float(_api_backoff_seconds)
+            _KEY_RATE_LIMITED[idx] = True
+            _ensure_key_for_request()
+    except Exception:
+        pass
     try:
         hdr_retry_after = response.headers.get("Retry-After")
         hdr_remaining = response.headers.get("X-Ratelimit-Remaining")
@@ -159,7 +353,7 @@ def _mark_rate_limited(response):
 
 
 def _build_utm_query():
-    return urlencode({"utm_source": _APP_NAME, "utm_medium": "referral"})
+    return urlencode({"utm_source": _active_app_name(), "utm_medium": "referral"})
 
 
 def add_utm(url):
@@ -202,12 +396,19 @@ def parse_focal_length(value):
 
 
 def _headers():
-    if not _UNSPLASH_ACCESS_KEY:
+    _ensure_key_for_request()
+    obj = _active_key_obj()
+    k = None
+    if isinstance(obj, dict):
+        k = obj.get("access_key")
+    if not k:
+        k = _UNSPLASH_ACCESS_KEY
+    if not k:
         raise RuntimeError("Missing UNSPLASH_ACCESS_KEY env var")
     return {
-        "Authorization": f"Client-ID {_UNSPLASH_ACCESS_KEY}",
+        "Authorization": f"Client-ID {str(k).strip()}",
         "Accept-Version": "v1",
-        "User-Agent": f"{_APP_NAME}",
+        "User-Agent": f"{_active_app_name()}",
     }
 
 
@@ -224,6 +425,7 @@ def fetch_photos(query, page=1, order_by="latest"):
     while True:
         tries += 1
         try:
+            _ensure_key_for_request()
             if _STOP_ON_RATE_LIMIT and _rate_limited:
                 return None
             _wait_for_api_slot()
@@ -261,6 +463,7 @@ def fetch_list_photos(page=1, order_by="latest"):
     while True:
         tries += 1
         try:
+            _ensure_key_for_request()
             if _STOP_ON_RATE_LIMIT and _rate_limited:
                 return None
             _wait_for_api_slot()
@@ -295,6 +498,7 @@ def fetch_photo_details(photo_id):
     while True:
         tries += 1
         try:
+            _ensure_key_for_request()
             if _STOP_ON_RATE_LIMIT and _rate_limited:
                 return None
             _wait_for_api_slot()
@@ -330,6 +534,7 @@ def _get_download_url(download_location):
     while True:
         tries += 1
         try:
+            _ensure_key_for_request()
             if _STOP_ON_RATE_LIMIT and _rate_limited:
                 return None
             _wait_for_api_slot()

@@ -5,6 +5,7 @@ import subprocess
 import shutil
 import csv
 import json
+import re
 
 import sharp_dataset_pipeline.hf_sync as hf_sync
 import sharp_dataset_pipeline.unsplash as unsplash
@@ -35,6 +36,63 @@ def _env_str(name: str, default: str) -> str:
     if v is None:
         return str(default)
     return str(v)
+
+
+def _load_unsplash_key_pool(json_path: str):
+    try:
+        p = str(json_path or "").strip()
+        if not p:
+            return []
+        if not os.path.exists(p):
+            return []
+        raw = open(p, "r", encoding="utf-8").read()
+    except Exception:
+        return []
+
+    def _normalize_items(obj):
+        if obj is None:
+            return []
+        if isinstance(obj, dict):
+            obj = [obj]
+        if not isinstance(obj, list):
+            return []
+        out = []
+        for it in obj:
+            if not isinstance(it, dict):
+                continue
+            k = it.get("UNSPLASH_ACCESS_KEY") or it.get("unsplash_access_key") or it.get("access_key")
+            k = str(k or "").strip()
+            if not k:
+                continue
+            an = it.get("UNSPLASH_APP_NAME") or it.get("unsplash_app_name") or it.get("app_name")
+            an = str(an or "").strip()
+            if not an:
+                an = str(APP_NAME or "").strip() or "sharp-ply-share"
+            out.append({"UNSPLASH_ACCESS_KEY": k, "UNSPLASH_APP_NAME": an})
+        return out
+
+    try:
+        return _normalize_items(json.loads(raw))
+    except Exception:
+        pass
+
+    try:
+        s = str(raw or "").strip()
+        if not s:
+            return []
+        # Tolerate the current file style (not valid JSON):
+        # {
+        #   { UNSPLASH_APP_NAME:"...", UNSPLASH_ACCESS_KEY:"..." },
+        #   ...
+        # }
+        if s.startswith("{") and s.endswith("}"):
+            s = "[" + s[1:-1] + "]"
+        s = re.sub(r"(?m)\b(UNSPLASH_APP_NAME|UNSPLASH_ACCESS_KEY)\s*:", r'"\\1":', s)
+        s = re.sub(r",\s*([}\]])", r"\\1", s)
+        obj = json.loads(s)
+        return _normalize_items(obj)
+    except Exception:
+        return []
 
 def _choose_bucket_per_page(remaining: int, hard_max: int) -> int:
     try:
@@ -548,8 +606,19 @@ def _get_local_focal_mm(image_path: str):
 
 
 def run_pipeline():
-    if not UNSPLASH_ACCESS_KEY:
-        raise RuntimeError("UNSPLASH_ACCESS_KEY 为空")
+    unsplash_key_pool = None
+    if not str(UNSPLASH_ACCESS_KEY or "").strip():
+        try:
+            keys_path = os.getenv(
+                "UNSPLASH_ACCESS_KEY_JSON",
+                os.path.join(os.path.dirname(__file__), "UNSPLASH_ACCESS_KEY.json"),
+            )
+            unsplash_key_pool = _load_unsplash_key_pool(keys_path)
+        except Exception:
+            unsplash_key_pool = None
+
+    if (not str(UNSPLASH_ACCESS_KEY or "").strip()) and (not unsplash_key_pool):
+        raise RuntimeError("UNSPLASH_ACCESS_KEY 为空，且未能从 UNSPLASH_ACCESS_KEY.json 加载")
     os.makedirs(SAVE_DIR, exist_ok=True)
     os.makedirs(INPUT_IMAGES_DIR, exist_ok=True)
     os.makedirs(GAUSSIANS_DIR, exist_ok=True)
@@ -593,7 +662,7 @@ def run_pipeline():
     )
 
     unsplash.configure_unsplash(
-        access_key=UNSPLASH_ACCESS_KEY,
+        access_key=(unsplash_key_pool if unsplash_key_pool else UNSPLASH_ACCESS_KEY),
         app_name=APP_NAME,
         api_base=UNSPLASH_API_BASE,
         per_page=int(PER_PAGE),
