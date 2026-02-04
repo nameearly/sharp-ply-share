@@ -3,7 +3,9 @@ import io
 import json
 import os
 import re
+import signal
 import subprocess
+import threading
 import time
 from datetime import datetime
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
@@ -53,6 +55,79 @@ def _is_precondition_failed(err: Exception) -> bool:
 def _print(msg: str):
     try:
         print(msg, flush=True)
+    except Exception:
+        pass
+
+
+def _control_dir() -> str:
+    try:
+        cd = os.getenv("CONTROL_DIR")
+        if cd is not None and str(cd).strip():
+            return os.path.abspath(str(cd).strip())
+    except Exception:
+        pass
+    try:
+        sd = os.getenv("REQ_SAVE_DIR")
+        if sd is not None and str(sd).strip():
+            return os.path.abspath(str(sd).strip())
+    except Exception:
+        pass
+    return os.path.abspath(os.getcwd())
+
+
+def _control_path(name: str) -> str:
+    return os.path.join(_control_dir(), str(name))
+
+
+def _pause_file() -> str:
+    return str(os.getenv("PAUSE_FILE", "PAUSE") or "PAUSE").strip() or "PAUSE"
+
+
+def _stop_file() -> str:
+    return str(os.getenv("STOP_FILE", "STOP") or "STOP").strip() or "STOP"
+
+
+def pause_requested() -> bool:
+    try:
+        return os.path.exists(_control_path(_pause_file()))
+    except Exception:
+        return False
+
+
+def stop_requested() -> bool:
+    try:
+        return os.path.exists(_control_path(_stop_file()))
+    except Exception:
+        return False
+
+
+def set_pause(paused: bool) -> bool:
+    p = _control_path(_pause_file())
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+    except Exception:
+        pass
+    try:
+        if paused:
+            with open(p, "a", encoding="utf-8"):
+                pass
+        else:
+            if os.path.exists(p):
+                os.remove(p)
+        return bool(paused)
+    except Exception:
+        return bool(paused)
+
+
+def touch_stop() -> None:
+    p = _control_path(_stop_file())
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+    except Exception:
+        pass
+    try:
+        with open(p, "a", encoding="utf-8"):
+            pass
     except Exception:
         pass
 
@@ -165,17 +240,42 @@ def _parse_code_blocks(text: str) -> list[str]:
 def _extract_unsplash_id_from_text(text: str) -> str | None:
     try:
         s = str(text or "")
-        m = re.search(r"https?://(www\.)?unsplash\.com/photos/([a-zA-Z0-9_-]{6,})", s, flags=re.IGNORECASE)
+        m = re.search(r"https?://(?:www\.)?unsplash\.com/photos/([a-zA-Z0-9_-]{6,})\b", s, flags=re.IGNORECASE)
         if m:
-            return str(m.group(2) or "").strip() or None
+            return str(m.group(1) or "").strip() or None
     except Exception:
         return None
     return None
 
 
+def _extract_http_urls(text: str) -> list[str]:
+    try:
+        s = str(text or "")
+        out = []
+        for m in re.finditer(r"https?://[^\s\]\)\>\"']+", s, flags=re.IGNORECASE):
+            u = str(m.group(0) or "").strip().strip(",.;")
+            if u and u not in out:
+                out.append(u)
+        return out
+    except Exception:
+        return []
+
+
+def _looks_like_unsplash_id(s: str) -> bool:
+    try:
+        v = str(s or "").strip()
+        if not v:
+            return False
+        if len(v) < 6 or len(v) > 32:
+            return False
+        return bool(re.match(r"^[a-zA-Z0-9_-]+$", v))
+    except Exception:
+        return False
+
+
 def _parse_want_tokens(block: str) -> list[str]:
     b = str(block or "")
-    m = re.search(r"(?im)^\s*want\s*:\s*(.+?)\s*$", b)
+    m = re.search(r"(?im)^\s*want\s*[:=]\s*(.+?)\s*$", b)
     if not m:
         return []
     raw = str(m.group(1) or "")
@@ -217,13 +317,13 @@ def _extract_requests(block: str, *, origin: dict) -> list[dict]:
 
     items = []
 
-    m_manifest = re.search(r"(?im)^\s*manifest_url\s*:\s*(.+?)\s*$", b)
+    m_manifest = re.search(r"(?im)^\s*(manifest_url|manifest|list_url)\s*:\s*(.+?)\s*$", b)
     if m_manifest:
-        mu = str(m_manifest.group(1) or "").strip().strip('"\'')
+        mu = str(m_manifest.group(2) or "").strip().strip('"\'')
         if mu:
             items.append({"src": "manifest", "manifest_url": mu})
 
-    if re.search(r"(?im)^\s*items\s*:\s*$", b):
+    if re.search(r"(?im)^\s*(items|urls|links|ids)\s*:\s*$", b):
         for line in b.splitlines():
             low = line.strip().lower()
             if not low.startswith("-"):
@@ -236,31 +336,50 @@ def _extract_requests(block: str, *, origin: dict) -> list[dict]:
                     payload = payload[1:-1]
                 except Exception:
                     pass
-            mid = re.search(r"unsplash_id\s*[:=]\s*['\"]?([a-zA-Z0-9_-]{6,})", payload)
+            mid = re.search(r"(unsplash_id|image_id|photo_id|id)\s*[:=]\s*['\"]?([a-zA-Z0-9_-]{6,})", payload)
             if mid:
-                items.append({"src": "unsplash", "unsplash_id": str(mid.group(1))})
+                items.append({"src": "unsplash", "unsplash_id": str(mid.group(2))})
                 continue
-            murl = re.search(r"url\s*[:=]\s*['\"]?([^'\"\s]+)", payload)
+            murl = re.search(r"(url|link|href)\s*[:=]\s*['\"]?([^'\"\s]+)", payload)
             if murl:
-                items.append({"src": "url", "url": str(murl.group(1))})
+                items.append({"src": "url", "url": str(murl.group(2))})
                 continue
             if re.match(r"^https?://", payload, flags=re.IGNORECASE):
-                items.append({"src": "url", "url": payload})
+                mid2 = _extract_unsplash_id_from_text(payload)
+                if mid2:
+                    items.append({"src": "unsplash", "unsplash_id": mid2})
+                else:
+                    items.append({"src": "url", "url": payload})
+                continue
+            if _looks_like_unsplash_id(payload):
+                items.append({"src": "unsplash", "unsplash_id": payload})
                 continue
 
-    mid = re.search(r"(?im)^\s*unsplash_id\s*:\s*([a-zA-Z0-9_-]{6,})\s*$", b)
+    mid = re.search(r"(?im)^\s*(unsplash_id|image_id|photo_id|id)\s*:\s*([a-zA-Z0-9_-]{6,})\s*$", b)
     if mid:
-        items.append({"src": "unsplash", "unsplash_id": str(mid.group(1)).strip()})
+        items.append({"src": "unsplash", "unsplash_id": str(mid.group(2)).strip()})
 
-    murl = re.search(r"(?im)^\s*url\s*:\s*(.+?)\s*$", b)
+    murl = re.search(r"(?im)^\s*(url|link|image_url|href)\s*:\s*(.+?)\s*$", b)
     if murl:
-        u = str(murl.group(1) or "").strip().strip('"\'')
+        u = str(murl.group(2) or "").strip().strip('"\'')
         if u:
             mid2 = _extract_unsplash_id_from_text(u)
             if mid2:
                 items.append({"src": "unsplash", "unsplash_id": mid2})
             else:
                 items.append({"src": "url", "url": u})
+
+    if not items:
+        try:
+            urls = _extract_http_urls(b)
+            for u in urls:
+                mid2 = _extract_unsplash_id_from_text(u)
+                if mid2:
+                    items.append({"src": "unsplash", "unsplash_id": mid2})
+                else:
+                    items.append({"src": "url", "url": u})
+        except Exception:
+            pass
 
     out = []
     for it in items:
@@ -490,21 +609,70 @@ def _hf_download_json(*, repo_id: str, repo_type: str, filename: str) -> dict | 
         return None
 
 
-def _list_inbox_req_paths(api, *, repo_id: str, repo_type: str, inbox_dir: str) -> list[str]:
+def _list_req_files_in_dir(api, *, repo_id: str, repo_type: str, dir_path: str, ext: str) -> list[str]:
+    base = str(dir_path).strip().strip("/")
+    out = []
+    if not base:
+        return []
+    try:
+        for ent in api.list_repo_tree(repo_id=repo_id, repo_type=repo_type, path_in_repo=base, recursive=True):
+            p = None
+            for attr in ("path", "path_in_repo", "rfilename"):
+                if hasattr(ent, attr):
+                    try:
+                        p = getattr(ent, attr)
+                        break
+                    except Exception:
+                        p = None
+            if not p:
+                continue
+            p = str(p)
+            if ext and (not p.lower().endswith(str(ext).lower())):
+                continue
+            out.append(p)
+        if out:
+            return sorted(out)
+    except Exception:
+        pass
+
     try:
         files = api.list_repo_files(repo_id=repo_id, repo_type=repo_type)
-        prefix = str(inbox_dir).strip().strip("/") + "/"
-        out = []
+        prefix = base + "/"
         for f in files or []:
             p = str(f or "")
             if not p.startswith(prefix):
                 continue
-            if not p.lower().endswith(".req"):
+            if ext and (not p.lower().endswith(str(ext).lower())):
                 continue
             out.append(p)
-        return sorted(out)
+        return sorted(list(set(out)))
     except Exception:
         return []
+
+
+def _list_done_ids(api, *, repo_id: str, repo_type: str, done_dir: str) -> set[str]:
+    out = set()
+    base = str(done_dir).strip().strip("/")
+    if not base:
+        return out
+    try:
+        for ent in api.list_repo_tree(repo_id=repo_id, repo_type=repo_type, path_in_repo=base, recursive=False):
+            p = None
+            for attr in ("path", "path_in_repo", "rfilename"):
+                if hasattr(ent, attr):
+                    try:
+                        p = getattr(ent, attr)
+                        break
+                    except Exception:
+                        p = None
+            if not p:
+                continue
+            name = os.path.basename(str(p))
+            if name:
+                out.add(str(name))
+    except Exception:
+        pass
+    return out
 
 
 def run_once():
@@ -600,6 +768,7 @@ def run_once():
             debug_fn=_print,
         )
 
+    ingested = 0
     processed = 0
 
     if ingest_enabled:
@@ -703,13 +872,19 @@ def run_once():
                 )
                 if ops:
                     _hf_write_ops(api, repo_id=repo_id, repo_type=repo_type, operations=ops, commit_message=f"ingest {eid}", dry_run=dry_run, debug_fn=_print)
-                    processed += 1
+                    ingested += 1
             except Exception as e:
                 _print(f"ingest error (ignored) | err={str(e)}")
 
     if process_enabled:
         max_per_run = max(1, min(_env_int("REQ_MAX_PER_RUN", 16), 256))
-        inbox_paths = _list_inbox_req_paths(api, repo_id=repo_id, repo_type=repo_type, inbox_dir=inbox_dir)
+        done_ids = set()
+        try:
+            done_ids = _list_done_ids(api, repo_id=repo_id, repo_type=repo_type, done_dir=f"{req_dir}/done")
+        except Exception:
+            done_ids = set()
+
+        inbox_paths = _list_req_files_in_dir(api, repo_id=repo_id, repo_type=repo_type, dir_path=inbox_dir, ext=".req")
         did = 0
         lines = []
         for rp in inbox_paths:
@@ -720,6 +895,10 @@ def run_once():
                 if not isinstance(req_obj, dict):
                     continue
                 req_id = str(req_obj.get("request_id") or "").strip() or os.path.splitext(os.path.basename(rp))[0]
+
+                if req_id and req_id in done_ids:
+                    continue
+
                 status_path = f"{status_dir}/{req_id}.json"
                 try:
                     st_obj = _hf_download_json(repo_id=repo_id, repo_type=repo_type, filename=status_path) or {}
@@ -967,16 +1146,88 @@ def run_once():
             except Exception as e:
                 _print(f"comment_discussion failed (ignored) | err={str(e)}")
 
+        processed = int(did)
+
     _print(f"run_once done | mode={mode} | processed={processed}")
+    return {"mode": mode, "ingested": int(ingested), "processed": int(processed)}
 
 
 def main():
     once = _env_flag("REQ_ONCE", True)
     poll = float(_env_int("REQ_POLL_SECS", 60))
+
+    sigint_window_s = float(os.getenv("SIGINT_WINDOW_S", "2.0") or "2.0")
+    sig_state = {"last": 0.0}
+    stop_flag = {"stop": False}
+
+    def _request_stop(reason: str):
+        try:
+            touch_stop()
+        except Exception:
+            pass
+        stop_flag["stop"] = True
+        _print(f"REQ: STOP requested | reason={reason} | stop_file={_control_path(_stop_file())}")
+
+    def _sigint_handler(signum, frame):
+        try:
+            now = time.time()
+            if pause_requested():
+                set_pause(False)
+                _print(f"REQ: resume requested | pause_file={_control_path(_pause_file())}")
+                return
+            prev = float(sig_state.get("last") or 0.0)
+            sig_state["last"] = float(now)
+            if prev > 0.0 and (now - prev) <= float(sigint_window_s):
+                _request_stop("SIGINT_DOUBLE")
+                return
+            set_pause(True)
+            _print(f"REQ: pause requested | pause_file={_control_path(_pause_file())}")
+        except Exception:
+            return
+
+    try:
+        signal.signal(signal.SIGINT, _sigint_handler)
+    except Exception:
+        pass
+
+    def _key_loop():
+        try:
+            import msvcrt
+
+            while (not stop_flag.get("stop")) and (not stop_requested()):
+                try:
+                    if msvcrt.kbhit():
+                        ch = msvcrt.getwch()
+                        if ch in ("\x04", "\x1a"):
+                            _request_stop("CTRL_D")
+                            break
+                except Exception:
+                    time.sleep(0.1)
+                    continue
+                time.sleep(0.1)
+        except Exception:
+            return
+
+    try:
+        t = threading.Thread(target=_key_loop, daemon=True)
+        t.start()
+    except Exception:
+        pass
+
     if once:
+        if stop_requested() or stop_flag.get("stop"):
+            return
+        if pause_requested():
+            return
         run_once()
         return
+
     while True:
+        if stop_requested() or stop_flag.get("stop"):
+            break
+        if pause_requested():
+            time.sleep(max(0.2, float(poll)))
+            continue
         run_once()
         time.sleep(max(5.0, float(poll)))
 

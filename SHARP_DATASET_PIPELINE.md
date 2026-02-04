@@ -76,12 +76,13 @@ Defaults:
 ### Scan limits
 
 - `MAX_CANDIDATES`: max candidate photos to consider per run (default: `200`).
-- `MAX_IMAGES`: max images to download per run (default: `50`)
+- `MAX_IMAGES`: max images to download per run (default: `-1`)
 
 Notes:
 
 - `MAX_IMAGES` is the main limiter for how many samples will be produced/processed.
 - Use `-1` for unlimited.
+- If `MAX_IMAGES` is not set, it defaults to `-1` (unlimited).
 
 ### SHARP / ml-sharp
 
@@ -194,6 +195,110 @@ Index notes:
 
 - `gsplat_model_file_url` in the index is normalized to store only the file token (e.g. `1770129991964_T8LMLFAy`), stripping `/share/file/` and `.ply`.
 - If needed, reconstruct the raw share path as `/share/file/<token>.ply`.
+
+
+## Requests queue (Discussion-driven)
+
+This project supports a public “request queue” so other users can ask for specific images to be processed.
+
+Overview:
+
+- Users post requests in a Hugging Face dataset discussion thread (e.g. discussion #2) using a tolerant `sharp-request` block.
+- An ingest job writes structured request files into the dataset repo under `requests/`.
+- One or more processing workers (on your own machines) compete for requests using HF-based locks, generate assets, upload them, and post results back to the discussion.
+
+### Request format (tolerant)
+
+In a discussion comment, include a fenced block:
+
+```text
+```sharp-request
+unsplash_id: 9w6Qb-dqBwE
+want: [ply, spz, share]
+note: hello
+```
+```
+
+Also supported (examples):
+
+- `id:` / `image_id:` / `photo_id:` as aliases for `unsplash_id:`
+- `url:` / `link:` aliases for external image URLs
+- `items:` / `urls:` / `links:` / `ids:` list mode (each item can be a bare Unsplash id, an Unsplash URL, or an http(s) URL)
+- `manifest_url:` / `manifest:` for batch requests via a JSON manifest (`{"items": [...]}`)
+
+### Dataset repo layout for requests
+
+Requests are stored in the HF dataset repo (not the GitHub code repo):
+
+- `requests/inbox/<req_id>.req`
+- `requests/status/<req_id>.json`
+- `requests/seen/<discussion_comment_id>`
+- `requests/locks/<req_id>`
+- `requests/done/<req_id>`
+
+### Processing entrypoint
+
+Run the request worker:
+
+```bash
+python -m sharp_dataset_pipeline.requests_worker
+```
+
+Key env vars:
+
+- `REQ_MODE`: `ingest` / `process` / `both`.
+- `REQ_DISCUSSION_NUM`: discussion number (default: `2`).
+- `REQ_DIR`: requests root dir in repo (default: `requests`).
+- `REQ_MAX_PER_RUN`: max requests to process per loop.
+- `REQ_POLL_SECS`: loop interval when `REQ_ONCE=0`.
+- `REQ_SAVE_DIR`: local cache dir for downloads and intermediates.
+
+### GitHub Action ingest
+
+The ingest step can run on GitHub Actions (recommended) to continuously translate discussion comments into `requests/inbox/*.req`.
+
+Workflow file:
+
+- `.github/workflows/hf-requests-ingest.yml` (in the GitHub code repo)
+
+Required GitHub repo secret:
+
+- `HF_TOKEN`: a Hugging Face token with write access to the dataset repo.
+
+
+## Hybrid worker (requests-first, then normal)
+
+You can run a hybrid worker that prioritizes request processing and falls back to the normal pipeline when idle:
+
+```bash
+python -m sharp_dataset_pipeline.hybrid_worker
+```
+
+Behavior:
+
+- Always tries `requests_worker` (process) first.
+- If no requests were processed, it runs a short normal pipeline batch.
+- If `MAX_IMAGES` is set and `>=0`, the hybrid worker treats it as a global budget across requests + normal combined. If `MAX_IMAGES` is unset, it runs indefinitely.
+
+Key env vars:
+
+- `HYBRID_NORMAL_BATCH_IMAGES` (default: `3`): normal batch size when idle.
+- `HYBRID_REQ_INGEST=1`: run ingest+process inside hybrid (optional; normally ingest is done by GitHub Action).
+
+
+## Pause / Stop control (requests + hybrid)
+
+In addition to the normal pipeline control, `requests_worker` and `hybrid_worker` also support the same control files:
+
+- `CONTROL_DIR` (defaults to current directory; can also use `REQ_SAVE_DIR`)
+- `PAUSE_FILE` (default: `PAUSE`)
+- `STOP_FILE` (default: `STOP`)
+
+Keyboard shortcuts:
+
+- `Ctrl+C`: pause / resume
+- Double `Ctrl+C` within `SIGINT_WINDOW_S` seconds: stop
+- `Ctrl+D` / `Ctrl+Z` (Windows): stop
 
 ### Range locks (for `SOURCE=list` + `order_by=oldest`)
 
