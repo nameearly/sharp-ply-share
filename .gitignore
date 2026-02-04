@@ -26,6 +26,14 @@ runs/
 *.ply
 *.spz
 
+# Control/status flags (do not commit)
+STOP
+PAUSE
+STOP.*
+PAUSE.*
+.stop
+.pause
+
 # Bundled binaries (do not upload)
 tools/gsbox/gsbox.exe
 tools/gsbox/*.zip
