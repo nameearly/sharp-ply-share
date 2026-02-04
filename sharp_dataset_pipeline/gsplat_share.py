@@ -1,9 +1,11 @@
 import base64
 import json
 import os
+import random
 import subprocess
 import math
 import shutil
+import time
 
 
 def make_small_ply(
@@ -306,27 +308,84 @@ def _chunked_upload_and_get_model_file_url(
 
 
 def trpc_post(base_url: str, path: str, payload: dict, *, debug_fn) -> dict | None:
+    def _sleep_backoff(attempt: int, *, retry_after_s: float | None = None):
+        try:
+            if retry_after_s is not None:
+                wait_s = float(retry_after_s)
+            else:
+                wait_s = min(30.0, float(1.0 * (2**int(attempt))))
+                wait_s = float(wait_s) * (0.5 + random.random())
+            time.sleep(max(0.2, float(wait_s)))
+        except Exception:
+            time.sleep(0.5)
+
     try:
+        tries = 3
+        try:
+            tries = int(os.getenv("GSPLAT_TRPC_RETRIES", "3") or "3")
+        except Exception:
+            tries = 3
+        tries = max(1, min(10, int(tries)))
+
         import requests
 
         url = f"{str(base_url).rstrip('/')}{path}"
-        r = requests.post(url, data=json.dumps(payload), headers={"content-type": "application/json"}, timeout=120)
-        if r.status_code != 200:
+        last_err = None
+        for attempt in range(0, int(tries)):
             try:
-                if debug_fn:
-                    debug_fn(f"GSPLAT: tRPC 请求失败 | status={r.status_code} | url={url} | body={r.text[:400]}")
-            except Exception:
-                pass
-            return None
-        try:
-            return r.json()
-        except Exception:
-            try:
-                if debug_fn:
-                    debug_fn(f"GSPLAT: tRPC JSON 解析失败 | url={url} | text={r.text[:400]}")
-            except Exception:
-                pass
-            return None
+                r = requests.post(url, data=json.dumps(payload), headers={"content-type": "application/json"}, timeout=120)
+                if int(r.status_code) != 200:
+                    try:
+                        if debug_fn:
+                            debug_fn(
+                                f"GSPLAT: tRPC 请求失败 | status={r.status_code} | url={url} | body={r.text[:400]}"
+                            )
+                    except Exception:
+                        pass
+
+                    st = int(r.status_code)
+                    retry_after = None
+                    try:
+                        if st == 429:
+                            ra = r.headers.get("retry-after") or r.headers.get("Retry-After")
+                            if ra is not None and str(ra).strip():
+                                retry_after = float(str(ra).strip())
+                    except Exception:
+                        retry_after = None
+
+                    if attempt < (tries - 1) and st in (408, 425, 429, 500, 502, 503, 504):
+                        _sleep_backoff(attempt, retry_after_s=retry_after)
+                        continue
+                    return None
+
+                try:
+                    return r.json()
+                except Exception as e:
+                    last_err = e
+                    try:
+                        if debug_fn:
+                            debug_fn(f"GSPLAT: tRPC JSON 解析失败 | url={url} | text={r.text[:400]}")
+                    except Exception:
+                        pass
+                    if attempt < (tries - 1):
+                        _sleep_backoff(attempt)
+                        continue
+                    return None
+            except Exception as e:
+                last_err = e
+                try:
+                    if debug_fn:
+                        debug_fn(f"GSPLAT: tRPC 请求异常（可重试） | url={url} | err={str(e)}")
+                except Exception:
+                    pass
+                if attempt < (tries - 1):
+                    _sleep_backoff(attempt)
+                    continue
+                return None
+
+        if last_err is not None:
+            raise last_err
+        return None
     except Exception as e:
         try:
             if debug_fn:
@@ -433,41 +492,114 @@ def upload_and_create_view(
                 pass
             return None
 
-        order_payload = {
-            "0": {
-                "modelFileUrl": str(model_file_url),
-                "title": str(title or ""),
-                "description": str(description or ""),
-                "expirationType": str(expiration_type or "1week"),
-            }
-        }
-        order_resp = trpc_post(gsplat_base, "/share/trpc/order.createOrder?batch=1", order_payload, debug_fn=debug_fn)
-        if not order_resp:
-            return None
-
-        trpc_err = _trpc_extract_error(order_resp)
-        if trpc_err is not None:
+        def _is_transient_trpc_error(err_obj) -> bool:
             try:
-                if debug_fn:
-                    debug_fn(f"GSPLAT: createOrder 返回错误 | err={str(trpc_err)[:400]}")
+                s = str(err_obj or "").lower()
+                return any(
+                    x in s
+                    for x in (
+                        "timeout",
+                        "timed out",
+                        "temporar",
+                        "rate",
+                        "too many",
+                        "429",
+                        "502",
+                        "503",
+                        "504",
+                        "gateway",
+                        "service unavailable",
+                        "network",
+                    )
+                )
             except Exception:
-                pass
-            return None
+                return False
+
+        tries = 4
+        try:
+            tries = int(os.getenv("GSPLAT_CREATE_ORDER_RETRIES", "4") or "4")
+        except Exception:
+            tries = 4
+        tries = max(1, min(10, int(tries)))
 
         share_id = None
         order_id = None
-        try:
-            data = _trpc_extract_data(order_resp)
-            if isinstance(data, dict):
-                share_id = data.get("shareId") or _deep_find_first(data, {"shareId"})
-                order_id = data.get("id") or _deep_find_first(data, {"id"})
-        except Exception:
-            share_id = None
+        last_resp = None
+        for attempt in range(0, int(tries)):
+            order_payload = {
+                "0": {
+                    "modelFileUrl": str(model_file_url),
+                    "title": str(title or ""),
+                    "description": str(description or ""),
+                    "expirationType": str(expiration_type or "1week"),
+                }
+            }
+            order_resp = trpc_post(gsplat_base, "/share/trpc/order.createOrder?batch=1", order_payload, debug_fn=debug_fn)
+            last_resp = order_resp
+            if not order_resp:
+                if attempt < (tries - 1):
+                    try:
+                        if debug_fn:
+                            debug_fn(f"GSPLAT: createOrder 请求失败，将重试 | attempt={attempt + 1}/{tries}")
+                    except Exception:
+                        pass
+                    try:
+                        wait_s = min(30.0, float(1.0 * (2**int(attempt))))
+                        wait_s = float(wait_s) * (0.5 + random.random())
+                        time.sleep(max(0.2, float(wait_s)))
+                    except Exception:
+                        time.sleep(0.5)
+                    continue
+                return None
+
+            trpc_err = _trpc_extract_error(order_resp)
+            if trpc_err is not None:
+                try:
+                    if debug_fn:
+                        debug_fn(f"GSPLAT: createOrder 返回错误 | err={str(trpc_err)[:400]}")
+                except Exception:
+                    pass
+                if attempt < (tries - 1) and _is_transient_trpc_error(trpc_err):
+                    try:
+                        wait_s = min(30.0, float(1.0 * (2**int(attempt))))
+                        wait_s = float(wait_s) * (0.5 + random.random())
+                        time.sleep(max(0.2, float(wait_s)))
+                    except Exception:
+                        time.sleep(0.5)
+                    continue
+                return None
+
+            try:
+                data = _trpc_extract_data(order_resp)
+                if isinstance(data, dict):
+                    share_id = data.get("shareId") or _deep_find_first(data, {"shareId"})
+                    order_id = data.get("id") or _deep_find_first(data, {"id"})
+            except Exception:
+                share_id = None
+
+            if share_id:
+                break
+
+            if attempt < (tries - 1):
+                try:
+                    if debug_fn:
+                        debug_fn(
+                            f"GSPLAT: createOrder 未返回 shareId，将重试 | attempt={attempt + 1}/{tries} | resp={str(order_resp)[:300]}"
+                        )
+                except Exception:
+                    pass
+                try:
+                    wait_s = min(30.0, float(1.0 * (2**int(attempt))))
+                    wait_s = float(wait_s) * (0.5 + random.random())
+                    time.sleep(max(0.2, float(wait_s)))
+                except Exception:
+                    time.sleep(0.5)
+                continue
 
         if not share_id:
             try:
                 if debug_fn:
-                    debug_fn(f"GSPLAT: createOrder 未返回 shareId | resp={str(order_resp)[:300]}")
+                    debug_fn(f"GSPLAT: createOrder 重试后仍未返回 shareId | resp={str(last_resp)[:300]}")
             except Exception:
                 pass
             return None
