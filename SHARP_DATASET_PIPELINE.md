@@ -122,6 +122,11 @@ Recommended:
 - `HF_INDEX_REPO_PATH`: JSONL index path in repo (default: `data/train.jsonl`)
 - `HF_INDEX_REFRESH_SECS`: refresh interval (index backend) (default: `300`)
 
+Index preview column:
+
+- `image`: full HF resolve URL for the JPG (Dataset Viewer uses this to render previews).
+- `image_id` remains the stable identifier used for dedup/locks/done checks. Do not replace it with a URL.
+
 Index JSONL compact mode:
 
 - `HF_INDEX_COMPACT=1`: write compact rows to local `train.jsonl` by dropping redundant fields (e.g. `unsplash_id`, `tags_text/topics_text`) and not forcing optional keys if not present.
@@ -165,6 +170,10 @@ If `HF_INDEX_DROP_DERIVABLE_URLS=1` and/or `HF_INDEX_ASSET_MODE=none` is used, t
 - `HF_INDEX_FLUSH_EVERY`: flush every N rows (default: `20`)
 - `HF_INDEX_FLUSH_SECS`: flush at least every N seconds (default: `30`)
 - `HF_INDEX_REFRESH_SECS`: refresh remote index for collaborator correctness when `HF_DONE_BACKEND=index` (default: `300`)
+
+Migration:
+
+- `scripts/hf_migrate_index_add_image_field.py` can backfill the `image` field for an existing `data/train.jsonl` and (optionally) upload it back to the Hub.
 
 ### Remote done check backend (optional)
 

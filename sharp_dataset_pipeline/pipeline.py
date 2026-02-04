@@ -279,6 +279,7 @@ def upload_worker(
                             try:
                                 meta = item.get('meta') if isinstance(item, dict) else None
                                 row = {
+                                    "image": info.get("image_url") if isinstance(info, dict) else None,
                                     "image_id": str(item["image_id"]),
                                     "image_url": info.get("image_url"),
                                     "ply_url": info.get("ply_url"),
@@ -507,15 +508,25 @@ def predict_worker(
                 _log_exc(debug_fn, f"predict 失败 | id={str(image_id)} | input={str(image_path)}", e)
                 plys = []
             for ply_path in plys or []:
-                if cfg.hf_upload:
-                    upload_q.put(
-                        {
-                            "image_id": image_id,
-                            "image_path": image_path,
-                            "ply_path": ply_path,
-                            "meta": meta,
-                        }
-                    )
+                if not cfg.hf_upload:
+                    continue
+                payload = {
+                    "image_id": image_id,
+                    "image_path": image_path,
+                    "ply_path": ply_path,
+                    "meta": meta,
+                }
+
+                # Avoid deadlock when upload queue is full: enqueue with timeout
+                # and keep checking stop/pause signals.
+                while True:
+                    if not gate(cfg, stop_event):
+                        break
+                    try:
+                        upload_q.put(payload, timeout=0.5)
+                        break
+                    except Exception:
+                        continue
         finally:
             try:
                 with lock:
@@ -1202,6 +1213,49 @@ def run(
                 )
         except Exception:
             pass
+
+    # Periodic heartbeat to make deadlocks/slowdowns visible.
+    try:
+        hb_s = float(str(os.getenv("PIPELINE_HEARTBEAT_SECS", "10") or "10").strip())
+    except Exception:
+        hb_s = 10.0
+    hb_s = max(1.0, float(hb_s))
+
+    def _heartbeat_loop():
+        last_uploaded = -1
+        while (not stop_event.is_set()) and (not stop_requested(cfg)):
+            try:
+                if pause_requested(cfg):
+                    time.sleep(max(0.5, hb_s))
+                    continue
+                iq, uq, pi, ui = _snapshot()
+                try:
+                    with lock:
+                        up = int(counters.get("uploaded", 0))
+                except Exception:
+                    up = -1
+                stalled = ""
+                try:
+                    if last_uploaded >= 0 and up == last_uploaded and (iq > 0 or uq > 0 or pi > 0 or ui > 0):
+                        stalled = " | stalled=1"
+                except Exception:
+                    stalled = ""
+                try:
+                    if debug_fn:
+                        debug_fn(
+                            f"HB | uploaded={up} image_q={iq} upload_q={uq} pi={pi} ui={ui} pause={int(pause_requested(cfg))} stop={int(stop_requested(cfg))}{stalled}"
+                        )
+                except Exception:
+                    pass
+                last_uploaded = up
+            except Exception:
+                pass
+            time.sleep(hb_s)
+
+    try:
+        threading.Thread(target=_heartbeat_loop, daemon=True).start()
+    except Exception:
+        pass
 
     prev_sigint_handler = None
     prev_sigterm_handler = None

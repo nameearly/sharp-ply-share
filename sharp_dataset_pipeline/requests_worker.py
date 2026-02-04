@@ -1013,6 +1013,7 @@ def run_once():
                                         "user_name": user.get("name") if isinstance(user, dict) else None,
                                     }
                                     row = {
+                                        "image": (result or {}).get("image_url"),
                                         "image_id": pid,
                                         "image_url": (result or {}).get("image_url"),
                                         "ply_url": (result or {}).get("ply_url"),

@@ -10,6 +10,7 @@ configs:
 
 - The Dataset Viewer is configured to read `data/train.jsonl` (see the `configs:` section in the YAML header above).
 - The actual assets (JPG / PLY / SPZ) are stored under `unsplash/<image_id>/`.
+- The `image` field in `data/train.jsonl` stores the full HF `resolve` URL of the JPG for Dataset Viewer previews. `image_id` stays as the stable identifier.
 
 ## Links
 
@@ -31,6 +32,7 @@ Each row in `data/train.jsonl` is a JSON object with stable (string) types for f
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `image` | `string` | Full HF resolve URL for the JPG (used by Dataset Viewer to preview images). |
 | `image_id` | `string` | Unsplash photo id. Also used as the directory name for assets. |
 | `gsplat_share_id` | `string` | Share id on gsplat.org (may be empty). |
 | `gsplat_order_id` | `string` | Order id on gsplat.org (may be empty). |

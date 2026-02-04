@@ -1,4 +1,5 @@
 *.json
+scripts/
 
 # Python
 __pycache__/

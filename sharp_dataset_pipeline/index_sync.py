@@ -192,6 +192,27 @@ class IndexSync:
             except Exception:
                 out[k] = ""
 
+        # Dataset viewer preview: keep a canonical `image` column with the full resolve URL.
+        # Do NOT overload `image_id` as it is used as the stable identifier for dedup/coord.
+        try:
+            img = out.get("image")
+            if img is None or str(img).strip() == "":
+                img = out.get("image_url")
+            img = "" if img is None else str(img)
+        except Exception:
+            img = ""
+        if (not img) and (not bool(getattr(self, "drop_derivable_urls", False))):
+            try:
+                ip = str(out.get("image_path") or "").strip().lstrip("/")
+                if ip:
+                    img = hf_utils.build_resolve_url(self.repo_id, ip, repo_type=self.repo_type)
+            except Exception:
+                img = ""
+        try:
+            out["image"] = "" if img is None else str(img)
+        except Exception:
+            out["image"] = ""
+
         if bool(getattr(self, "drop_derivable_urls", False)):
             try:
                 out.pop("image_url", None)
@@ -427,7 +448,16 @@ class IndexSync:
                 except Exception:
                     continue
 
-        return out
+        # Ensure `image` is the first key for consistent viewer column ordering.
+        try:
+            ordered = {"image": out.get("image", ""), "image_id": out.get("image_id", "")}
+            for k, v in out.items():
+                if k in ordered:
+                    continue
+                ordered[k] = v
+            return ordered
+        except Exception:
+            return out
 
     def _sanitize_local_index(self) -> bool:
         try:
