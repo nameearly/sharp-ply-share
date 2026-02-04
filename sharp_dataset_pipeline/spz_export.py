@@ -28,7 +28,7 @@ def maybe_export_from_ply(
         if os.path.isfile(out) and os.path.getsize(out) > 0:
             return out
 
-        tool = (tool or "").strip().lower() or "gsbox"
+        tool = (tool or "").strip().lower() or "3dgsconverter"
 
         def _print(msg: str):
             try:
@@ -56,6 +56,51 @@ def maybe_export_from_ply(
                 return cand
             except Exception:
                 return str(gsbox_bin or "gsbox")
+
+        def _gsconverter_resolve_bin() -> str:
+            try:
+                cand = str(gsconverter_bin or "").strip() or "3dgsconverter"
+                if os.path.isfile(cand):
+                    return cand
+                which = shutil.which(cand)
+                if which:
+                    return which
+                return cand
+            except Exception:
+                return str(gsconverter_bin or "3dgsconverter")
+
+        def _ply_has_non_vertex_elements(path: str) -> bool:
+            try:
+                path = os.path.abspath(str(path))
+                if not os.path.isfile(path):
+                    return False
+                with open(path, "rb") as f:
+                    seen_vertex = False
+                    while True:
+                        raw = f.readline()
+                        if not raw:
+                            return False
+                        try:
+                            line = raw.decode("ascii", errors="ignore").strip("\r\n")
+                        except Exception:
+                            line = ""
+                        low = line.strip().lower()
+                        if low == "end_header":
+                            break
+                        if not low.startswith("element "):
+                            continue
+                        parts = low.split()
+                        if len(parts) < 3:
+                            continue
+                        name = parts[1]
+                        if name == "vertex":
+                            seen_vertex = True
+                            continue
+                        if seen_vertex:
+                            return True
+                return False
+            except Exception:
+                return False
 
         def _ply_make_vertex_only_binary_little_endian(in_path: str) -> str | None:
             try:
@@ -211,7 +256,17 @@ def maybe_export_from_ply(
                     cmd += ["-ov", str(int(gsbox_spz_version))]
                 return cmd
 
-            p = subprocess.run(_gsbox_cmd(src), capture_output=True, text=True)
+            src_for_gsbox = src
+            try:
+                if _ply_has_non_vertex_elements(src):
+                    tmp = _ply_make_vertex_only_binary_little_endian(src)
+                    if tmp:
+                        _print(f"SPZ: PLY 含非 vertex 元素（如 extrinsic/intrinsic），将使用 vertex-only 重写后交给 gsbox | ply={os.path.basename(src)}")
+                        src_for_gsbox = tmp
+            except Exception:
+                src_for_gsbox = src
+
+            p = subprocess.run(_gsbox_cmd(src_for_gsbox), capture_output=True, text=True)
             if p.returncode != 0 or (not os.path.isfile(out)) or os.path.getsize(out) <= 0:
                 tmp = _ply_make_vertex_only_binary_little_endian(src)
                 if tmp:
@@ -237,19 +292,89 @@ def maybe_export_from_ply(
                     raise RuntimeError(msg[:800])
 
         elif tool in ("3dgsconverter", "gsconverter", "gsconv"):
-            cmd = [
-                str(gsconverter_bin),
-                "-i",
-                src,
-                "-o",
-                out,
-                "-f",
-                "spz",
-                "--compression_level",
-                str(int(gsconverter_compression_level)),
-                "--force",
-            ]
-            subprocess.run(cmd, check=True)
+            resolved = _gsconverter_resolve_bin()
+            try:
+                if not (resolved and (os.path.isfile(resolved) or shutil.which(resolved))):
+                    _print(
+                        "SPZ: 未找到 3dgsconverter，可通过以下任一方式解决：\n"
+                        "  1) pip install git+https://github.com/francescofugazzi/3dgsconverter.git\n"
+                        "  2) 设置环境变量 GSCONVERTER_BIN 指向 3dgsconverter/gsconverter\n"
+                        "  3) 或改用 SPZ_TOOL=gsbox\n"
+                    )
+                    _print("SPZ: 将自动回退到 gsbox")
+                    tool = "gsbox"
+                else:
+                    _print(f"SPZ: 3dgsconverter={resolved}")
+                    cmd = [
+                        str(resolved),
+                        "-i",
+                        src,
+                        "-o",
+                        out,
+                        "-f",
+                        "spz",
+                        "--compression_level",
+                        str(int(gsconverter_compression_level)),
+                        "--rgb",
+                        "--force",
+                    ]
+                    subprocess.run(cmd, check=True)
+            except Exception as e:
+                _print(f"SPZ: 3dgsconverter 转换失败，将自动回退到 gsbox | err={str(e)}")
+                tool = "gsbox"
+
+            if tool == "gsbox":
+                resolved = _gsbox_resolve_bin()
+                try:
+                    if not (resolved and (os.path.isfile(resolved) or shutil.which(resolved))):
+                        return None
+                except Exception:
+                    return None
+
+                _print(f"SPZ: gsbox={resolved}")
+
+                def _gsbox_cmd(in_ply: str) -> list[str]:
+                    cmd = [resolved, "p2z", "-i", in_ply, "-o", out]
+                    if int(gsbox_spz_quality) > 0:
+                        cmd += ["-q", str(int(gsbox_spz_quality))]
+                    if int(gsbox_spz_version) > 0:
+                        cmd += ["-ov", str(int(gsbox_spz_version))]
+                    return cmd
+
+                src_for_gsbox = src
+                try:
+                    if _ply_has_non_vertex_elements(src):
+                        tmp = _ply_make_vertex_only_binary_little_endian(src)
+                        if tmp:
+                            _print(f"SPZ: PLY 含非 vertex 元素（如 extrinsic/intrinsic），将使用 vertex-only 重写后交给 gsbox | ply={os.path.basename(src)}")
+                            src_for_gsbox = tmp
+                except Exception:
+                    src_for_gsbox = src
+
+                p = subprocess.run(_gsbox_cmd(src_for_gsbox), capture_output=True, text=True)
+                if p.returncode != 0 or (not os.path.isfile(out)) or os.path.getsize(out) <= 0:
+                    tmp = _ply_make_vertex_only_binary_little_endian(src)
+                    if tmp:
+                        _print(f"SPZ: gsbox 初次转换失败，将重写 vertex-only PLY 后重试 | ply={os.path.basename(src)}")
+                        p2 = subprocess.run(_gsbox_cmd(tmp), capture_output=True, text=True)
+                        if p2.returncode != 0:
+                            msg = ((p2.stderr or "") + "\n" + (p2.stdout or "")).strip()
+                            _print(
+                                "SPZ: gsbox 二次转换仍失败（vertex-only 重写已执行）。建议：\n"
+                                "  - 检查 PLY 是否损坏/截断\n"
+                                "  - 或改用 SPZ_TOOL=3dgsconverter\n"
+                                f"err={msg[:400]}"
+                            )
+                            raise RuntimeError(msg[:800])
+                    else:
+                        msg = ((p.stderr or "") + "\n" + (p.stdout or "")).strip()
+                        _print(
+                            "SPZ: gsbox 转换失败且无法重写 vertex-only PLY。建议：\n"
+                            "  - 检查 PLY header/format\n"
+                            "  - 或改用 SPZ_TOOL=3dgsconverter\n"
+                            f"err={msg[:400]}"
+                        )
+                        raise RuntimeError(msg[:800])
         else:
             _print(f"SPZ: 未知 SPZ_TOOL={tool}，跳过")
             return None
