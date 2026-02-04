@@ -1,0 +1,146 @@
+name: HF Auto-Merge Additive PRs
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"  # every 15 minutes
+
+jobs:
+  auto_merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "huggingface_hub>=0.24.0"
+
+      - name: Auto-merge additive HF PRs
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HUGGINGFACE_HUB_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID: eatmorefruit/sharp-ply-share
+          HF_REPO_TYPE: dataset
+        run: |
+          python - << 'PY'
+          import os
+          import re
+          import sys
+          from huggingface_hub import HfApi
+
+
+          def _env_str(k: str, default: str = "") -> str:
+              v = os.getenv(k)
+              if v is None:
+                  return default
+              return str(v)
+
+
+          def _is_additive_only_diff(diff: str) -> bool:
+              """Return True if this diff looks like only adding new files.
+
+              Conservative rule:
+              - Each file section must include `new file mode`.
+              - Reject if any section contains deletions from an existing file (--- a/ not /dev/null).
+              - Reject if any section contains `deleted file mode` or renames.
+              """
+              if not diff or not diff.strip():
+                  return False
+
+              # Split by file boundaries.
+              parts = diff.split("diff --git ")
+              # First part is header.
+              file_parts = [p for p in parts[1:] if p.strip()]
+              if not file_parts:
+                  return False
+
+              for p in file_parts:
+                  # Hard rejects.
+                  if "deleted file mode" in p:
+                      return False
+                  if "rename from" in p or "rename to" in p:
+                      return False
+
+                  # Must be a new file.
+                  if "new file mode" not in p:
+                      return False
+
+                  # Expect old side to be /dev/null.
+                  # Example:
+                  # --- /dev/null
+                  # +++ b/path
+                  if re.search(r"^---\s+a/", p, flags=re.MULTILINE):
+                      return False
+                  if not re.search(r"^---\s+/dev/null\s*$", p, flags=re.MULTILINE):
+                      return False
+                  if not re.search(r"^\+\+\+\s+b/", p, flags=re.MULTILINE):
+                      return False
+
+              return True
+
+
+          def main() -> int:
+              token = _env_str("HF_TOKEN", "").strip()
+              repo_id = _env_str("HF_REPO_ID", "").strip()
+              repo_type = _env_str("HF_REPO_TYPE", "dataset").strip() or "dataset"
+
+              if not token:
+                  print("Missing HF_TOKEN", file=sys.stderr)
+                  return 2
+              if not repo_id:
+                  print("Missing HF_REPO_ID", file=sys.stderr)
+                  return 2
+
+              api = HfApi(token=token)
+
+              merged = 0
+              skipped = 0
+              errors = 0
+
+              for d in api.get_repo_discussions(
+                  repo_id=repo_id,
+                  repo_type=repo_type,
+                  discussion_type="pull_request",
+                  discussion_status="open",
+              ):
+                  try:
+                      num = int(getattr(d, "num"))
+                      title = str(getattr(d, "title", ""))
+                      details = api.get_discussion_details(repo_id=repo_id, repo_type=repo_type, discussion_num=num)
+
+                      # Skip conflicts.
+                      conflicting = getattr(details, "conflicting_files", None)
+                      if conflicting:
+                          skipped += 1
+                          print(f"SKIP PR#{num} (conflicts): {title} | conflicting_files={len(conflicting)}")
+                          continue
+
+                      diff = str(getattr(details, "diff", "") or "")
+                      if not _is_additive_only_diff(diff):
+                          skipped += 1
+                          print(f"SKIP PR#{num} (non-additive): {title}")
+                          continue
+
+                      api.merge_pull_request(repo_id=repo_id, repo_type=repo_type, discussion_num=num)
+                      merged += 1
+                      print(f"MERGED PR#{num}: {title}")
+                  except Exception as e:
+                      errors += 1
+                      print(f"ERROR processing PR: {e}")
+
+              print(f"Done | merged={merged} skipped={skipped} errors={errors}")
+              return 0 if errors == 0 else 1
+
+
+          raise SystemExit(main())
+          PY
