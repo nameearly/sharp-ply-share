@@ -398,17 +398,24 @@ def upload_worker(
                 if (not stop_event.is_set()) and (not stop_requested(cfg)):
                     max_retry = 2
                     try:
-                        if isinstance(task, dict):
-                            r = int(task.get("_kb_retries", 0) or 0)
+                        for it in (batch or []):
+                            if not isinstance(it, dict):
+                                continue
+                            r = int(it.get("_kb_retries", 0) or 0)
                             if r < int(max_retry):
-                                task["_kb_retries"] = int(r) + 1
-                                upload_q.put(task)
+                                it["_kb_retries"] = int(r) + 1
+                                upload_q.put(it)
                             else:
                                 touch_stop_file(cfg)
                                 stop_event.set()
+                                break
                     except Exception:
                         try:
-                            upload_q.put(task)
+                            for it in (batch or []):
+                                try:
+                                    upload_q.put(it)
+                                except Exception:
+                                    pass
                         except Exception:
                             pass
             except Exception:
@@ -1175,7 +1182,6 @@ def run(
         def _on_sigint(_signum, _frame):
             try:
                 now = time.time()
-                sigint_state["last"] = float(now)
                 paused = bool(pause_requested(cfg))
                 if paused:
                     set_pause_file(cfg, False)
@@ -1188,15 +1194,20 @@ def run(
                     except Exception:
                         pass
                 else:
-                    set_pause_file(cfg, True)
-                    try:
-                        if debug_fn:
-                            iq, uq, pi, ui = _snapshot()
-                            debug_fn(
-                                f"SIGINT: pause requested | pause_file={_pause_file_path(cfg)} | stop_file={_stop_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
-                            )
-                    except Exception:
-                        pass
+                    prev = float(sigint_state.get("last") or 0.0)
+                    sigint_state["last"] = float(now)
+                    if prev > 0.0 and (now - prev) <= float(cfg.sigint_window_s or 2.0):
+                        _request_stop("SIGINT_DOUBLE")
+                    else:
+                        set_pause_file(cfg, True)
+                        try:
+                            if debug_fn:
+                                iq, uq, pi, ui = _snapshot()
+                                debug_fn(
+                                    f"SIGINT: pause requested | pause_file={_pause_file_path(cfg)} | stop_file={_stop_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
+                                )
+                        except Exception:
+                            pass
             except Exception:
                 _request_stop("sigint_handler_error")
 
@@ -1312,19 +1323,7 @@ def run(
                 return
             except KeyboardInterrupt:
                 try:
-                    paused = bool(pause_requested(cfg))
-                    if paused:
-                        set_pause_file(cfg, False)
-                        iq, uq, pi, ui = _snapshot()
-                        debug_fn(
-                            f"Ctrl+C：恢复（删除 PAUSE） | pause_file={_pause_file_path(cfg)} | stop_file={_stop_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
-                        )
-                    else:
-                        set_pause_file(cfg, True)
-                        iq, uq, pi, ui = _snapshot()
-                        debug_fn(
-                            f"Ctrl+C：暂停（创建 PAUSE） | pause_file={_pause_file_path(cfg)} | stop_file={_stop_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
-                        )
+                    _on_sigint(signal.SIGINT, None)
                 except Exception as e:
                     _log_exc(debug_fn, "Ctrl+C 处理失败：停止并退出", e)
                     _request_stop("keyboardinterrupt_error")

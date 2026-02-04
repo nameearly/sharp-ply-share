@@ -616,6 +616,17 @@ def run_pipeline():
         except Exception:
             range_coord = None
 
+    try:
+        os.environ.setdefault("HF_INDEX_COMPACT", "1")
+        os.environ.setdefault("HF_INDEX_COMPACT_DROP_EMPTY", "1")
+        os.environ.setdefault("HF_INDEX_TEXT_MODE", "full")
+        os.environ.setdefault("HF_INDEX_ASSET_MODE", "none")
+        os.environ.setdefault("HF_INDEX_DROP_DERIVABLE_URLS", "1")
+        os.environ.setdefault("HF_INDEX_DROP_USER_NAME", "1")
+        os.environ.setdefault("HF_INDEX_DROP_UNSPLASH_ID", "1")
+    except Exception:
+        pass
+
     index_sync_obj = None
     if HF_UPLOAD and HF_WRITE_INDEX and HF_REPO_ID and HF_INDEX_REPO_PATH:
         try:

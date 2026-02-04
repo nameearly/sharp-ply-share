@@ -8,6 +8,7 @@ __pycache__/
 venv/
 .env
 .env.*
+hf_update_index.py
 
 # Node
 node_modules/

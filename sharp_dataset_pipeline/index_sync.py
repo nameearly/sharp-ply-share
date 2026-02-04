@@ -3,6 +3,7 @@ import os
 import shutil
 import threading
 import time
+from urllib.parse import urlparse
 
 from . import hf_utils
 
@@ -35,6 +36,72 @@ class IndexSync:
         self.hf_index_flush_secs = float(hf_index_flush_secs)
         self.hf_index_refresh_secs = float(hf_index_refresh_secs)
         self.debug_fn = debug_fn
+
+        try:
+            self.compact = str(os.getenv("HF_INDEX_COMPACT", "0") or "0").strip().lower() in ("1", "true", "yes", "y")
+        except Exception:
+            self.compact = False
+        try:
+            default_drop = "1" if bool(self.compact) else "0"
+            self.compact_drop_empty = str(os.getenv("HF_INDEX_COMPACT_DROP_EMPTY", default_drop) or default_drop).strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "y",
+            )
+        except Exception:
+            self.compact_drop_empty = bool(self.compact)
+
+        try:
+            default_mode = "path" if bool(self.compact) else "url"
+            self.asset_mode = str(os.getenv("HF_INDEX_ASSET_MODE", default_mode) or default_mode).strip().lower()
+        except Exception:
+            self.asset_mode = "path" if bool(self.compact) else "url"
+        if str(self.asset_mode) not in ("url", "path", "both", "none"):
+            self.asset_mode = "url"
+
+        try:
+            default_text = "full"
+            self.text_mode = str(os.getenv("HF_INDEX_TEXT_MODE", default_text) or default_text).strip().lower()
+        except Exception:
+            self.text_mode = "full"
+        if str(self.text_mode) not in ("full", "minimal", "none"):
+            self.text_mode = "full"
+
+        try:
+            default_drop_urls = "1" if bool(self.compact) else "0"
+            self.drop_derivable_urls = str(os.getenv("HF_INDEX_DROP_DERIVABLE_URLS", default_drop_urls) or default_drop_urls).strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "y",
+            )
+        except Exception:
+            self.drop_derivable_urls = bool(self.compact)
+
+        try:
+            default_drop_user_name = "1" if bool(self.compact) else "0"
+            self.drop_user_name = str(os.getenv("HF_INDEX_DROP_USER_NAME", default_drop_user_name) or default_drop_user_name).strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "y",
+            )
+        except Exception:
+            self.drop_user_name = bool(self.compact)
+
+        try:
+            default_drop_unsplash_id = "1" if bool(self.compact) else "0"
+            self.drop_unsplash_id = str(
+                os.getenv("HF_INDEX_DROP_UNSPLASH_ID", default_drop_unsplash_id) or default_drop_unsplash_id
+            ).strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "y",
+            )
+        except Exception:
+            self.drop_unsplash_id = bool(self.compact)
 
         self.lock = threading.Lock()
         self.indexed: set[str] = set()
@@ -98,49 +165,267 @@ class IndexSync:
         out = dict(row)
         out["image_id"] = pid
 
-        for k in (
-            "image_url",
-            "ply_url",
-            "spz_url",
-            "gsplat_url",
-            "gsplat_share_id",
-            "gsplat_order_id",
-            "gsplat_model_file_url",
-            "unsplash_id",
-            "unsplash_url",
-            "created_at",
-            "user_username",
-            "user_name",
-        ):
+        def _try_to_repo_path(v: str) -> str:
+            try:
+                s = str(v or "").strip()
+                if not s:
+                    return ""
+                if s.startswith("/") and ("/resolve/" not in s):
+                    return s.lstrip("/")
+                if not (s.startswith("http://") or s.startswith("https://")):
+                    return s.lstrip("/")
+                p = urlparse(s)
+                parts = [x for x in str(p.path or "").strip("/").split("/") if x]
+                if len(parts) >= 6 and parts[0] in ("datasets", "models") and parts[3] == "resolve":
+                    return "/".join(parts[5:])
+                return s.lstrip("/")
+            except Exception:
+                try:
+                    return str(v or "").strip().lstrip("/")
+                except Exception:
+                    return ""
+
+        for k in ("image_url", "ply_url", "spz_url"):
             try:
                 v = out.get(k)
                 out[k] = "" if v is None else str(v)
             except Exception:
                 out[k] = ""
 
-        tags = self._normalize_list_str(out.get("tags"))
-        topics = self._normalize_list_str(out.get("topics"))
-        tags_text = " ".join(tags)
-        topics_text = " ".join(topics)
+        if bool(getattr(self, "drop_derivable_urls", False)):
+            try:
+                out.pop("image_url", None)
+                out.pop("ply_url", None)
+                out.pop("spz_url", None)
+            except Exception:
+                pass
+
+        if (not bool(getattr(self, "drop_derivable_urls", False))) and str(getattr(self, "asset_mode", "url")) in ("path", "both"):
+            try:
+                imgp = _try_to_repo_path(out.get("image_url"))
+                plyp = _try_to_repo_path(out.get("ply_url"))
+                spzp = _try_to_repo_path(out.get("spz_url"))
+                if imgp:
+                    out["image_path"] = imgp
+                if plyp:
+                    out["ply_path"] = plyp
+                if spzp:
+                    out["spz_path"] = spzp
+                if str(getattr(self, "asset_mode", "url")) == "path":
+                    out.pop("image_url", None)
+                    out.pop("ply_url", None)
+                    out.pop("spz_url", None)
+            except Exception:
+                pass
+        if bool(getattr(self, "drop_derivable_urls", False)) or str(getattr(self, "asset_mode", "url")) == "none":
+            try:
+                out.pop("image_path", None)
+                out.pop("ply_path", None)
+                out.pop("spz_path", None)
+            except Exception:
+                pass
+
+        for k in (
+            "gsplat_url",
+            "gsplat_share_id",
+            "gsplat_order_id",
+            "gsplat_model_file_url",
+            "unsplash_url",
+            "created_at",
+            "user_username",
+            "user_name",
+        ):
+            try:
+                if (not bool(getattr(self, "compact", False))) or (k in out):
+                    v = out.get(k)
+                    out[k] = "" if v is None else str(v)
+            except Exception:
+                if (not bool(getattr(self, "compact", False))) or (k in out):
+                    out[k] = ""
+
+        try:
+            s = str(out.get("gsplat_model_file_url") or "").strip()
+            if s:
+                # Accept formats like:
+                # - /share/file/<token>.ply
+                # - share/file/<token>.ply
+                # - <token>.ply
+                # - <token>
+                s2 = s
+                try:
+                    s2 = s2.split("?", 1)[0]
+                    s2 = s2.split("#", 1)[0]
+                except Exception:
+                    s2 = s2
+                s2 = s2.strip().lstrip("/")
+                if "/share/file/" in "/" + s2:
+                    try:
+                        s2 = ("/" + s2).split("/share/file/", 1)[1]
+                    except Exception:
+                        s2 = s2
+                # keep only last path segment
+                try:
+                    if "/" in s2:
+                        s2 = s2.rsplit("/", 1)[-1]
+                except Exception:
+                    s2 = s2
+                if s2.endswith(".ply"):
+                    s2 = s2[: -len(".ply")]
+                out["gsplat_model_file_url"] = str(s2).strip()
+        except Exception:
+            pass
+
+        if bool(getattr(self, "drop_derivable_urls", False)):
+            try:
+                out.pop("gsplat_url", None)
+                out.pop("unsplash_url", None)
+            except Exception:
+                pass
+
+        if bool(getattr(self, "drop_user_name", False)):
+            try:
+                out.pop("user_name", None)
+            except Exception:
+                pass
+
+        if bool(getattr(self, "drop_unsplash_id", False)):
+            try:
+                out.pop("unsplash_id", None)
+            except Exception:
+                pass
+
+        def _tokenize(v):
+            try:
+                if v is None:
+                    return []
+                if isinstance(v, list):
+                    items = []
+                    for it in v:
+                        if it is None:
+                            continue
+                        items.append(str(it))
+                    s = " ".join(items)
+                else:
+                    s = str(v)
+                s = s.replace("\u3001", ",")
+                parts = []
+                cur = ""
+                for ch in s:
+                    if ch.isspace() or ch == ",":
+                        if cur:
+                            parts.append(cur)
+                            cur = ""
+                        continue
+                    cur += ch
+                if cur:
+                    parts.append(cur)
+                outp = []
+                seen = set()
+                for p in parts:
+                    t = str(p or "").strip()
+                    if not t:
+                        continue
+                    key = t.lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    outp.append(t)
+                return outp
+            except Exception:
+                return []
+
+        tags_tokens = _tokenize(out.get("tags")) + _tokenize(out.get("tags_text"))
+        topics_tokens = _tokenize(out.get("topics")) + _tokenize(out.get("topics_text"))
+
+        # Dedupe again after concatenation
+        def _dedupe(tokens):
+            res = []
+            seen = set()
+            for t in tokens:
+                tt = str(t or "").strip()
+                if not tt:
+                    continue
+                key = tt.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                res.append(tt)
+            return res
+
+        tags_tokens = _dedupe(tags_tokens)
+        topics_tokens = _dedupe(topics_tokens)
+
+        tags_text = " ".join(tags_tokens)
+        topics_text = " ".join(topics_tokens)
         out["tags"] = tags_text
         out["topics"] = topics_text
         out["tags_text"] = tags_text
         out["topics_text"] = topics_text
 
+        try:
+            tm = str(getattr(self, "text_mode", "full") or "full").strip().lower()
+        except Exception:
+            tm = "full"
+        if tm == "none":
+            try:
+                out.pop("tags", None)
+                out.pop("topics", None)
+                out.pop("tags_text", None)
+                out.pop("topics_text", None)
+            except Exception:
+                pass
+        elif tm == "minimal":
+            try:
+                if "topics" in out and str(out.get("topics") or "") == "":
+                    out.pop("topics", None)
+            except Exception:
+                pass
+
         for k in ("description", "alt_description"):
             try:
-                if out.get(k) is None:
-                    out[k] = ""
-                    continue
-                if isinstance(out.get(k), (dict, list)):
-                    out[k] = json.dumps(out.get(k), ensure_ascii=False)
-                else:
-                    out[k] = str(out.get(k))
+                if tm != "none":
+                    if out.get(k) is None:
+                        out[k] = ""
+                        continue
+                    if isinstance(out.get(k), (dict, list)):
+                        out[k] = json.dumps(out.get(k), ensure_ascii=False)
+                    else:
+                        out[k] = str(out.get(k))
             except Exception:
                 try:
-                    out[k] = str(out.get(k))
+                    if tm != "none":
+                        out[k] = str(out.get(k))
                 except Exception:
-                    out[k] = ""
+                    if tm != "none":
+                        out[k] = ""
+
+        if tm == "none":
+            try:
+                out.pop("description", None)
+                out.pop("alt_description", None)
+            except Exception:
+                pass
+        elif tm == "minimal":
+            try:
+                if "description" in out and str(out.get("description") or "") == "":
+                    out.pop("description", None)
+                if "alt_description" in out and str(out.get("alt_description") or "") == "":
+                    out.pop("alt_description", None)
+            except Exception:
+                pass
+
+        if bool(getattr(self, "compact", False)) and bool(getattr(self, "compact_drop_empty", False)):
+            for k in (
+                "gsplat_url",
+                "gsplat_share_id",
+                "gsplat_order_id",
+                "gsplat_model_file_url",
+            ):
+                try:
+                    if k in out and str(out.get(k) or "") == "":
+                        out.pop(k, None)
+                except Exception:
+                    continue
 
         return out
 

@@ -32,29 +32,36 @@ Each row in `data/train.jsonl` is a JSON object with stable (string) types for f
 | Field | Type | Description |
 | --- | --- | --- |
 | `image_id` | `string` | Unsplash photo id. Also used as the directory name for assets. |
-| `image_url` | `string` | Hugging Face `resolve` URL for the JPG. |
-| `ply_url` | `string` | Hugging Face `resolve` URL for the Gaussian Splat PLY (ml-sharp export). |
-| `spz_url` | `string` | Hugging Face `resolve` URL for the SPZ (may be empty if not exported). |
-| `gsplat_url` | `string` | Public viewer URL on `https://gsplat.org/viewer/<shareId>` (may be empty if not uploaded). |
 | `gsplat_share_id` | `string` | Share id on gsplat.org (may be empty). |
 | `gsplat_order_id` | `string` | Order id on gsplat.org (may be empty). |
-| `gsplat_model_file_url` | `string` | gsplat.org internal file URL returned by upload endpoints (may be empty). |
+| `gsplat_model_file_url` | `string` | gsplat.org model file token (normalized): for example `1770129991964_T8LMLFAy` (may be empty). |
 | `tags` | `string` | Space-separated tags (derived from Unsplash tags). |
 | `topics` | `string` | Space-separated topics (often empty). |
 | `tags_text` | `string` | Same as `tags` (kept for backwards compatibility / full-text search). |
 | `topics_text` | `string` | Same as `topics`. |
 | `alt_description` | `string` | Unsplash `alt_description` (empty string if missing). |
 | `description` | `string` | Unsplash `description` (empty string if missing). |
-| `unsplash_id` | `string` | Same as `image_id`. |
-| `unsplash_url` | `string` | Unsplash photo page URL. |
 | `created_at` | `string` | Unsplash `created_at` timestamp (ISO8601). |
 | `user_username` | `string` | Unsplash author username. |
-| `user_name` | `string` | Unsplash author display name. |
 
 ## Quick usage
 
 - **Load metadata**: download `data/train.jsonl` and parse JSONL.
-- **Fetch assets**: use `image_url` / `ply_url` / `spz_url` (if non-empty) directly, or use `hf_hub_download` with the corresponding repo path.
+
+- **Fetch assets**: assets are stored under `unsplash/<image_id>/`:
+  - `unsplash/<image_id>/<image_id>.jpg`
+  - `unsplash/<image_id>/<image_id>.ply`
+  - `unsplash/<image_id>/<image_id>.spz`
+
+You can reconstruct URLs from ids:
+
+- Unsplash photo page: `https://unsplash.com/photos/<image_id>`
+- HF resolve URL (dataset): `https://huggingface.co/datasets/eatmorefruit/sharp-ply-share/resolve/main/unsplash/<image_id>/<image_id>.<ext>`
+- gsplat viewer URL (if `gsplat_share_id` present): `https://gsplat.org/viewer/<gsplat_share_id>`
+
+If you need the original gsplat share file path, reconstruct:
+
+- `gsplat_model_file_url_raw`: `/share/file/<gsplat_model_file_url>.ply`
 
 `<image_id>.ply`: made by ml-sharp (https://github.com/apple/ml-sharp) from the corresponding Unsplash photo page `https://unsplash.com/photos/<image_id>`.
 
@@ -65,13 +72,11 @@ TL;DR: you can do pretty much anything with Unsplash images (including commercia
 - You can’t sell an image without significant modification.
 - You can’t compile images from Unsplash to replicate a similar or competing service.
 
-Attribution is not required, but appreciated.
-
 One image to one ply, not high-quality, just for fun.
 
 ## Pipeline notes (gsplat)
 
-- The pipeline can optionally upload a (potentially reduced) PLY to https://gsplat.org and record a public viewer link in `gsplat_url`.
+- The pipeline can optionally upload a (potentially reduced) PLY to https://gsplat.org and record a public viewer link in `gsplat_share_id`.
 - By default it uploads the original PLY.
 - You can enable generating a smaller `*.small.gsplat.ply` via `splat-transform` by setting `GSPLAT_USE_SMALL_PLY=1`.
 

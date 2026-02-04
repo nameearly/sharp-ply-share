@@ -113,11 +113,49 @@ Recommended:
 - `HF_UPLOAD`: enable upload (default: `1`)
 - `HF_REPO_ID`: target repo (default: `eatmorefruit/sharp-ply-share`)
 - `HF_REPO_TYPE`: `dataset` or `model` (default: `dataset`)
-- `HF_SUBDIR`: subdir within repo (default: `unsplash`)
+- `HF_SUBDIR`: subdir for assets (default: `unsplash`)
 - `HF_USE_LOCKS`: enable per-image locks (default: `1`)
 - `HF_LOCKS_DIR`: lock dir in repo (default: `locks`)
 - `HF_DONE_DIR`: done dir in repo (default: `done`)
 - `HF_LOCK_STALE_SECS`: stale lock TTL (default: `21600`)
+- `HF_INDEX_REPO_PATH`: JSONL index path in repo (default: `data/train.jsonl`)
+- `HF_INDEX_REFRESH_SECS`: refresh interval (index backend) (default: `300`)
+
+Index JSONL compact mode:
+
+- `HF_INDEX_COMPACT=1`: write compact rows to local `train.jsonl` by dropping redundant fields (e.g. `unsplash_id`, `tags_text/topics_text`) and not forcing optional keys if not present.
+- `HF_INDEX_COMPACT_DROP_EMPTY=1`: when compact mode is enabled, also drop optional fields that are empty (e.g. empty `gsplat_*`, empty `topics`, empty `description`).
+- `HF_INDEX_ASSET_MODE`: how to store asset references in index rows:
+  - `url` (default when not compact): store `image_url/ply_url/spz_url` as full resolve URLs.
+  - `path` (default when compact): store `image_path/ply_path/spz_path` as repo-relative paths and drop the long URL fields.
+  - `both`: store both URL and path fields.
+  - `none`: drop both URL and path asset fields (downstream reconstructs from `image_id`).
+- `HF_INDEX_TEXT_MODE`: how to store text fields in index rows:
+  - `full`: keep `tags/topics/description/alt_description`.
+  - `minimal` (default when compact): drop empty optional text fields (e.g. empty `topics`, empty `description`).
+  - `none`: drop text fields for maximum compression.
+- `HF_INDEX_DROP_DERIVABLE_URLS=1`: (optional) drop URL fields that can be derived from other fields (e.g. `unsplash_url`, `gsplat_url`, `image_url/ply_url/spz_url`). Default is `0` when not in compact mode.
+- `HF_INDEX_DROP_USER_NAME=1`: drop `user_name` because it duplicates `user_username`.
+- `HF_INDEX_DROP_UNSPLASH_ID=1`: drop `unsplash_id` because it duplicates `image_id`.
+
+If you store only repo-relative paths (asset_mode=`path`), downstream can reconstruct the resolve URLs:
+
+- Dataset repo: `https://huggingface.co/datasets/<HF_REPO_ID>/resolve/<REV>/<path>`
+- Model repo: `https://huggingface.co/models/<HF_REPO_ID>/resolve/<REV>/<path>`
+
+Notes:
+
+- When only `*_path` fields are stored (no `*_url`), the Hugging Face Dataset Viewer will not be able to directly render assets from the index without additional processing.
+
+If `HF_INDEX_DROP_DERIVABLE_URLS=1` and/or `HF_INDEX_ASSET_MODE=none` is used, the index may not contain any URL/path fields. Downstream can reconstruct the URLs/paths:
+
+- HF repo relative asset path (default layout): `<HF_SUBDIR>/<image_id>/<image_id>.<ext>`
+  - ext: `jpg`, `ply`, `spz`
+- HF resolve URL:
+  - dataset repo: `https://huggingface.co/datasets/<HF_REPO_ID>/resolve/<REV>/<HF_SUBDIR>/<image_id>/<image_id>.<ext>`
+  - model repo: `https://huggingface.co/<HF_REPO_ID>/resolve/<REV>/<HF_SUBDIR>/<image_id>/<image_id>.<ext>`
+- Unsplash photo page URL: `https://unsplash.com/photos/<image_id>`
+- gsplat viewer URL (when `gsplat_share_id` is present): `<GSPLAT_BASE>/viewer/<gsplat_share_id>`
 
 ### HF index (optional)
 
@@ -151,6 +189,11 @@ Related variables (for `parquet`/`duckdb`):
 - `GSPLAT_FILTER_VISIBILITY`: visibility filter passed to `splat-transform` (default: `20000`)
 - `SPLAT_TRANSFORM_BIN`: `splat-transform` path (default: `splat-transform`)
 - `GSPLAT_USE_SMALL_PLY`: generate `*.small.gsplat.ply` before upload (default: `0`); set `1` to enable
+
+Index notes:
+
+- `gsplat_model_file_url` in the index is normalized to store only the file token (e.g. `1770129991964_T8LMLFAy`), stripping `/share/file/` and `.ply`.
+- If needed, reconstruct the raw share path as `/share/file/<token>.ply`.
 
 ### Range locks (for `SOURCE=list` + `order_by=oldest`)
 
