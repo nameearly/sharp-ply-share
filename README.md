@@ -23,6 +23,7 @@ configs:
 - Range locks (list + oldest): range coordination is stored on HF under `ranges/locks`, `ranges/done`, and `ranges/progress`.
 - Range done prefix: `ranges/progress/done_prefix.json` is used to avoid repo-wide listings of `ranges/done/`.
 - Ant-style range selection (optional): `ANT_ENABLED=1` with `ANT_CANDIDATE_RANGES`, `ANT_EPSILON`, `ANT_FRESH_SECS` to reduce contention across multiple clients.
+- HF upload batching (optional): `HF_UPLOAD_BATCH_SIZE=4` is recommended for throughput; small contributors can use `HF_UPLOAD_BATCH_SIZE=1`. `HF_UPLOAD_BATCH_WAIT_MS` controls the micro-batching wait window.
 
 ## Data fields
 

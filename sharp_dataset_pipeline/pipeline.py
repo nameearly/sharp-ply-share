@@ -164,9 +164,23 @@ def upload_worker(
     coord: hf_sync.LockDoneSync | None,
     index_sync,
     upload_sample_pair_fn,
+    upload_sample_pairs_fn,
     try_super_squash_fn,
     debug_fn,
 ):
+    try:
+        batch_size = int(str(os.getenv("HF_UPLOAD_BATCH_SIZE", "1") or "1").strip())
+    except Exception:
+        batch_size = 1
+    batch_size = max(1, min(int(batch_size), 64))
+
+    try:
+        default_wait = "200" if batch_size > 1 else "0"
+        batch_wait_ms = int(str(os.getenv("HF_UPLOAD_BATCH_WAIT_MS", default_wait) or default_wait).strip())
+    except Exception:
+        batch_wait_ms = 0
+    batch_wait_ms = max(0, min(int(batch_wait_ms), 5000))
+
     while not stop_event.is_set():
         if not gate(cfg, stop_event):
             break
@@ -182,155 +196,203 @@ def upload_worker(
         if stop_event.is_set() or stop_requested(cfg):
             upload_q.task_done()
             break
+
+        batch = [task]
+        if batch_size > 1 and (upload_sample_pairs_fn is not None):
+            try:
+                end_ts = None
+                if int(batch_wait_ms) > 0:
+                    end_ts = time.time() + (float(batch_wait_ms) / 1000.0)
+
+                for _ in range(0, int(batch_size) - 1):
+                    if stop_event.is_set() or stop_requested(cfg):
+                        break
+                    nxt = None
+                    if end_ts is None:
+                        try:
+                            nxt = upload_q.get_nowait()
+                        except Exception:
+                            break
+                    else:
+                        remaining = float(end_ts) - time.time()
+                        if remaining <= 0:
+                            break
+                        try:
+                            nxt = upload_q.get(timeout=min(0.05, remaining))
+                        except Exception:
+                            continue
+                    if nxt is None:
+                        try:
+                            upload_q.task_done()
+                        except Exception:
+                            pass
+                        break
+                    batch.append(nxt)
+            except Exception:
+                batch = [task]
+
         try:
             with lock:
-                counters["upload_inflight"] = int(counters.get("upload_inflight", 0)) + 1
+                counters["upload_inflight"] = int(counters.get("upload_inflight", 0)) + int(len(batch) or 1)
         except Exception:
             pass
         try:
             if not cfg.hf_upload:
-                upload_q.task_done()
+                for _ in batch:
+                    upload_q.task_done()
                 continue
             if not cfg.hf_repo_id:
                 debug_fn("HF_UPLOAD 开启但 HF_REPO_ID 为空，跳过上传")
-                upload_q.task_done()
+                for _ in batch:
+                    upload_q.task_done()
                 continue
 
-            info = upload_sample_pair_fn(
-                repo_id=cfg.hf_repo_id,
-                image_id=task["image_id"],
-                image_path=task["image_path"],
-                ply_path=task["ply_path"],
-            )
-            debug_fn(f"HF 上传完成 | image={info['image_url']} | ply={info['ply_url']}")
+            results = None
+            if (upload_sample_pairs_fn is not None) and len(batch) > 1:
+                results = upload_sample_pairs_fn(repo_id=cfg.hf_repo_id, tasks=batch)
+            for item in batch:
+                info = None
+                if isinstance(results, dict) and results:
+                    try:
+                        info = results.get(str(item.get("image_id")))
+                    except Exception:
+                        info = None
+                if info is None:
+                    info = upload_sample_pair_fn(
+                        repo_id=cfg.hf_repo_id,
+                        image_id=item["image_id"],
+                        image_path=item["image_path"],
+                        ply_path=item["ply_path"],
+                    )
+                debug_fn(f"HF 上传完成 | image={info['image_url']} | ply={info['ply_url']}")
 
-            if coord is not None:
-                ok_done = coord.mark_done(str(task["image_id"]))
-                if ok_done:
+                if coord is not None:
+                    ok_done = coord.mark_done(str(item["image_id"]))
+                    if ok_done:
+                        try:
+                            with lock:
+                                checked_ids.add(str(item["image_id"]))
+                        except Exception:
+                            pass
+
+                        if index_sync is not None:
+                            try:
+                                meta = item.get('meta') if isinstance(item, dict) else None
+                                row = {
+                                    "image_id": str(item["image_id"]),
+                                    "image_url": info.get("image_url"),
+                                    "ply_url": info.get("ply_url"),
+                                }
+                                try:
+                                    if isinstance(info, dict):
+                                        for k, v in info.items():
+                                            if k not in row:
+                                                row[k] = v
+                                except Exception:
+                                    pass
+                                if isinstance(meta, dict):
+                                    row.update(meta)
+                                index_sync.add_row(row)
+                            except Exception as e:
+                                _log_exc(debug_fn, f"写入 index 失败 | id={str(item.get('image_id'))}", e)
+
+                to_delete = None
+                if cfg.ply_delete_after_upload and int(cfg.ply_keep_last) > 0:
                     try:
                         with lock:
-                            checked_ids.add(str(task["image_id"]))
+                            keep = counters.get("keep_plys")
+                            if keep is None:
+                                keep = deque()
+                                counters["keep_plys"] = keep
+                            keep.append(item["ply_path"])
+                            if len(keep) > int(cfg.ply_keep_last):
+                                to_delete = keep.popleft()
+                    except Exception:
+                        to_delete = None
+
+                if to_delete:
+                    try:
+                        ap = os.path.normcase(os.path.abspath(str(to_delete)))
+                        ga = os.path.normcase(os.path.abspath(str(cfg.gaussians_dir)))
+
+                        def _inside(p: str, root: str) -> bool:
+                            try:
+                                return os.path.commonpath([p, root]) == root
+                            except Exception:
+                                return False
+
+                        def _try_remove(p: str, root: str):
+                            try:
+                                pp = os.path.normcase(os.path.abspath(str(p)))
+                                rr = os.path.normcase(os.path.abspath(str(root)))
+                                if _inside(pp, rr) and os.path.isfile(pp):
+                                    os.remove(pp)
+                            except Exception as e:
+                                _log_exc(debug_fn, f"本地清理失败 | path={str(p)}", e)
+
+                        inside = False
+                        try:
+                            inside = os.path.commonpath([ap, ga]) == ga
+                        except Exception:
+                            inside = False
+                        if inside and os.path.isfile(ap):
+                            os.remove(ap)
+
+                        try:
+                            base = os.path.splitext(os.path.basename(ap))[0]
+                        except Exception:
+                            base = None
+
+                        canon = base
+                        try:
+                            if canon:
+                                changed = True
+                                while changed:
+                                    changed = False
+                                    for suf in [".small.gsplat", ".vertexonly.binary"]:
+                                        if canon.endswith(suf):
+                                            canon = canon[: -len(suf)]
+                                            changed = True
+                        except Exception:
+                            canon = base
+
+                        if canon:
+                            for suf in [
+                                ".spz",
+                                ".vertexonly.binary.ply",
+                                ".small.gsplat.ply",
+                                ".small.gsplat.vertexonly.binary.ply",
+                            ]:
+                                _try_remove(os.path.join(ga, canon + suf), ga)
+
+                            try:
+                                for p in glob.glob(os.path.join(ga, canon + ".small.gsplat.*.ply")):
+                                    _try_remove(p, ga)
+                            except Exception:
+                                pass
+
+                            try:
+                                img_root = os.path.normcase(os.path.abspath(str(cfg.input_images_dir)))
+                                save_root = os.path.normcase(os.path.abspath(str(cfg.save_dir)))
+                                if not _inside(img_root, save_root):
+                                    img_root = None
+                                for ext in [".jpg", ".jpeg"]:
+                                    if img_root:
+                                        _try_remove(os.path.join(img_root, canon + ext), img_root)
+                            except Exception:
+                                pass
                     except Exception:
                         pass
 
-                    if index_sync is not None:
-                        try:
-                            meta = task.get('meta') if isinstance(task, dict) else None
-                            row = {
-                                "image_id": str(task["image_id"]),
-                                "image_url": info.get("image_url"),
-                                "ply_url": info.get("ply_url"),
-                            }
-                            try:
-                                if isinstance(info, dict):
-                                    for k, v in info.items():
-                                        if k not in row:
-                                            row[k] = v
-                            except Exception:
-                                pass
-                            if isinstance(meta, dict):
-                                row.update(meta)
-                            index_sync.add_row(row)
-                        except Exception as e:
-                            _log_exc(debug_fn, f"写入 index 失败 | id={str(task.get('image_id'))}", e)
-
-            to_delete = None
-            if cfg.ply_delete_after_upload and int(cfg.ply_keep_last) > 0:
-                try:
-                    with lock:
-                        keep = counters.get("keep_plys")
-                        if keep is None:
-                            keep = deque()
-                            counters["keep_plys"] = keep
-                        keep.append(task["ply_path"])
-                        if len(keep) > int(cfg.ply_keep_last):
-                            to_delete = keep.popleft()
-                except Exception:
-                    to_delete = None
-
-            if to_delete:
-                try:
-                    ap = os.path.normcase(os.path.abspath(str(to_delete)))
-                    ga = os.path.normcase(os.path.abspath(str(cfg.gaussians_dir)))
-
-                    def _inside(p: str, root: str) -> bool:
-                        try:
-                            return os.path.commonpath([p, root]) == root
-                        except Exception:
-                            return False
-
-                    def _try_remove(p: str, root: str):
-                        try:
-                            pp = os.path.normcase(os.path.abspath(str(p)))
-                            rr = os.path.normcase(os.path.abspath(str(root)))
-                            if _inside(pp, rr) and os.path.isfile(pp):
-                                os.remove(pp)
-                        except Exception as e:
-                            _log_exc(debug_fn, f"本地清理失败 | path={str(p)}", e)
-
-                    inside = False
-                    try:
-                        inside = os.path.commonpath([ap, ga]) == ga
-                    except Exception:
-                        inside = False
-                    if inside and os.path.isfile(ap):
-                        os.remove(ap)
-
-                    try:
-                        base = os.path.splitext(os.path.basename(ap))[0]
-                    except Exception:
-                        base = None
-
-                    canon = base
-                    try:
-                        if canon:
-                            changed = True
-                            while changed:
-                                changed = False
-                                for suf in [".small.gsplat", ".vertexonly.binary"]:
-                                    if canon.endswith(suf):
-                                        canon = canon[: -len(suf)]
-                                        changed = True
-                    except Exception:
-                        canon = base
-
-                    if canon:
-                        for suf in [
-                            ".spz",
-                            ".vertexonly.binary.ply",
-                            ".small.gsplat.ply",
-                            ".small.gsplat.vertexonly.binary.ply",
-                        ]:
-                            _try_remove(os.path.join(ga, canon + suf), ga)
-
-                        try:
-                            for p in glob.glob(os.path.join(ga, canon + ".small.gsplat.*.ply")):
-                                _try_remove(p, ga)
-                        except Exception:
-                            pass
-
-                        try:
-                            img_root = os.path.normcase(os.path.abspath(str(cfg.input_images_dir)))
-                            save_root = os.path.normcase(os.path.abspath(str(cfg.save_dir)))
-                            if not _inside(img_root, save_root):
-                                img_root = None
-                            for ext in [".jpg", ".jpeg"]:
-                                if img_root:
-                                    _try_remove(os.path.join(img_root, canon + ext), img_root)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-            do_squash = False
-            with lock:
-                counters["uploaded"] = int(counters.get("uploaded", 0)) + 1
-                uploaded = int(counters["uploaded"])
-                if cfg.hf_squash_every and int(cfg.hf_squash_every) > 0 and uploaded % int(cfg.hf_squash_every) == 0:
-                    do_squash = True
-            if do_squash:
-                debug_fn(f"触发 HF super-squash | uploaded={uploaded}")
-                threading.Thread(target=try_super_squash_fn, args=(cfg.hf_repo_id,), daemon=True).start()
+                do_squash = False
+                with lock:
+                    counters["uploaded"] = int(counters.get("uploaded", 0)) + 1
+                    uploaded = int(counters["uploaded"])
+                    if cfg.hf_squash_every and int(cfg.hf_squash_every) > 0 and uploaded % int(cfg.hf_squash_every) == 0:
+                        do_squash = True
+                if do_squash:
+                    debug_fn(f"触发 HF super-squash | uploaded={uploaded}")
+                    threading.Thread(target=try_super_squash_fn, args=(cfg.hf_repo_id,), daemon=True).start()
         except KeyboardInterrupt:
             try:
                 if (not stop_event.is_set()) and (not stop_requested(cfg)):
@@ -356,10 +418,17 @@ def upload_worker(
         finally:
             try:
                 with lock:
-                    counters["upload_inflight"] = max(0, int(counters.get("upload_inflight", 0)) - 1)
+                    counters["upload_inflight"] = max(0, int(counters.get("upload_inflight", 0)) - int(len(batch) or 1))
             except Exception:
                 pass
-            upload_q.task_done()
+            try:
+                for _ in batch:
+                    upload_q.task_done()
+            except Exception:
+                try:
+                    upload_q.task_done()
+                except Exception:
+                    pass
 
 
 def predict_worker(
@@ -1049,6 +1118,7 @@ def run(
     remote_done_fn,
     index_sync,
     upload_sample_pair_fn,
+    upload_sample_pairs_fn,
     try_super_squash_fn,
     run_sharp_predict_once_fn,
     local_has_focal_exif_fn,
@@ -1191,6 +1261,7 @@ def run(
                     coord,
                     index_sync,
                     upload_sample_pair_fn,
+                    upload_sample_pairs_fn,
                     try_super_squash_fn,
                     debug_fn,
                 ),

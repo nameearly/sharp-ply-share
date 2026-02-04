@@ -96,6 +96,13 @@ Notes:
 - `DOWNLOAD_QUEUE_MAX` (default: `8`)
 - `UPLOAD_QUEUE_MAX` (default: `256`)
 - `UPLOAD_WORKERS` (default: `2`)
+- `HF_UPLOAD_BATCH_SIZE`: optional batch size for HF uploads (default: `1`). When >1, each upload worker will try to group multiple samples into a single HF commit for better throughput.
+- `HF_UPLOAD_BATCH_WAIT_MS`: micro-batching wait window in milliseconds (default: `200` when batch is enabled; otherwise `0`).
+
+Recommended:
+
+- `HF_UPLOAD_BATCH_SIZE=4` for higher throughput.
+- `HF_UPLOAD_BATCH_SIZE=1` for small contributors.
 
 ### Logging / debugging
 

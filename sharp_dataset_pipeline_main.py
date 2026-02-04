@@ -723,6 +723,28 @@ def run_pipeline():
             debug_fn=print_debug,
         )
 
+    def _upload_sample_pairs(repo_id: str, tasks: list):
+        return hf_upload.upload_sample_pairs(
+            repo_id=repo_id,
+            tasks=tasks,
+            hf_subdir=HF_SUBDIR,
+            repo_type=HF_REPO_TYPE,
+            gsplat_enabled=GSPLAT_UPLOAD,
+            gsplat_base=GSPLAT_BASE,
+            gsplat_expiration_type=GSPLAT_EXPIRATION_TYPE,
+            gsplat_filter_visibility=GSPLAT_FILTER_VISIBILITY,
+            splat_transform_bin=SPLAT_TRANSFORM_BIN,
+            gsplat_use_small_ply=GSPLAT_USE_SMALL_PLY,
+            spz_enabled=SPZ_EXPORT,
+            spz_tool=SPZ_TOOL,
+            gsbox_bin=GSBOX_BIN,
+            gsbox_spz_quality=GSBOX_SPZ_QUALITY,
+            gsbox_spz_version=GSBOX_SPZ_VERSION,
+            gsconverter_bin=GSCONVERTER_BIN,
+            gsconverter_compression_level=GSCONVERTER_COMPRESSION_LEVEL,
+            debug_fn=print_debug,
+        )
+
     cfg = pipeline.PipelineConfig(
         save_dir=SAVE_DIR,
         control_dir=CONTROL_DIR,
@@ -773,6 +795,7 @@ def run_pipeline():
         remote_done_fn=remote_done_fn,
         index_sync=index_sync_obj,
         upload_sample_pair_fn=_upload_sample_pair,
+        upload_sample_pairs_fn=_upload_sample_pairs,
         try_super_squash_fn=_hf_try_super_squash,
         run_sharp_predict_once_fn=run_sharp_predict_once_fn,
         local_has_focal_exif_fn=_local_has_focal_exif,
