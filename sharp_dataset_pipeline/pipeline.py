@@ -589,6 +589,13 @@ def download_loop(
         if not gate(cfg, stop_event):
             break
         if _limit_reached(downloaded_images, int(cfg.max_images)):
+            try:
+                if debug_fn:
+                    debug_fn(
+                        f"download_loop exit | reason=max_images | downloaded={int(downloaded_images)} max_images={int(cfg.max_images)} scanned={int(scanned)} max_candidates={int(cfg.max_candidates)}"
+                    )
+            except Exception:
+                pass
             break
         if cfg.stop_on_rate_limit and unsplash.is_rate_limited():
             try:
@@ -862,6 +869,13 @@ def download_loop(
             if not gate(cfg, stop_event):
                 break
             if _limit_reached(scanned, int(cfg.max_candidates)) or _limit_reached(downloaded_images, int(cfg.max_images)):
+                try:
+                    if debug_fn and _limit_reached(downloaded_images, int(cfg.max_images)):
+                        debug_fn(
+                            f"download_loop stop in-page | reason=max_images | downloaded={int(downloaded_images)} max_images={int(cfg.max_images)} scanned={int(scanned)} max_candidates={int(cfg.max_candidates)} page={int(page)}"
+                        )
+                except Exception:
+                    pass
                 break
 
             photo_id = str((photo or {}).get("id"))
@@ -1089,6 +1103,23 @@ def download_loop(
                 active_range_end_page = None
                 range_progress = None
                 active_range_acquired_ts = None
+
+    try:
+        if debug_fn:
+            reason = "loop_exit"
+            if stop_event.is_set() or stop_requested(cfg):
+                reason = "stopped"
+            elif _limit_reached(downloaded_images, int(cfg.max_images)):
+                reason = "max_images"
+            elif _limit_reached(scanned, int(cfg.max_candidates)):
+                reason = "max_candidates"
+            elif cfg.stop_on_rate_limit and unsplash.is_rate_limited():
+                reason = "rate_limited"
+            debug_fn(
+                f"download_loop done | reason={str(reason)} | downloaded={int(downloaded_images)} scanned={int(scanned)} page={int(page)} max_images={int(cfg.max_images)} max_candidates={int(cfg.max_candidates)}"
+            )
+    except Exception:
+        pass
     if (active_range is not None) and (range_coord is not None):
         try:
             a, b = active_range

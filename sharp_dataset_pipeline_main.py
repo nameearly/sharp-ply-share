@@ -554,6 +554,32 @@ def run_pipeline():
     os.makedirs(INPUT_IMAGES_DIR, exist_ok=True)
     os.makedirs(GAUSSIANS_DIR, exist_ok=True)
 
+    try:
+        max_candidates_eff = int(_env_int("MAX_CANDIDATES", int(MAX_CANDIDATES)))
+    except Exception:
+        max_candidates_eff = int(MAX_CANDIDATES)
+    try:
+        max_images_eff = int(_env_int("MAX_IMAGES", int(MAX_IMAGES)))
+    except Exception:
+        max_images_eff = int(MAX_IMAGES)
+
+    try:
+        if int(max_images_eff) < 0 and os.getenv("MAX_CANDIDATES") is None:
+            max_candidates_eff = -1
+            try:
+                print_debug("Config | MAX_IMAGES=-1 detected and MAX_CANDIDATES not set: defaulting MAX_CANDIDATES to -1 (unlimited)")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    try:
+        print_debug(
+            f"Config | SOURCE={str(SOURCE)} | MAX_IMAGES={int(max_images_eff)} | MAX_CANDIDATES={int(max_candidates_eff)} | LIST_PER_PAGE={int(LIST_PER_PAGE)} | LIST_AUTO_SEEK={bool(LIST_AUTO_SEEK)}"
+        )
+    except Exception:
+        pass
+
     hf_sync.configure_hf_sync(
         hf_upload=HF_UPLOAD,
         repo_type=HF_REPO_TYPE,
@@ -594,7 +620,7 @@ def run_pipeline():
         and HF_REPO_ID
         and SOURCE == "list"
         and bool(RANGE_LOCKS_ENABLED)
-        and (int(MAX_IMAGES) < 0 or int(MAX_IMAGES) >= int(RANGE_LOCK_MIN_IMAGES))
+        and (int(max_images_eff) < 0 or int(max_images_eff) >= int(RANGE_LOCK_MIN_IMAGES))
     ):
         try:
             range_coord = hf_sync.RangeLockSync(HF_REPO_ID)
@@ -769,8 +795,8 @@ def run_pipeline():
         list_per_page=int(LIST_PER_PAGE),
         list_auto_seek=bool(LIST_AUTO_SEEK),
         list_seek_back_pages=int(LIST_SEEK_BACK_PAGES),
-        max_candidates=int(MAX_CANDIDATES),
-        max_images=int(MAX_IMAGES),
+        max_candidates=int(max_candidates_eff),
+        max_images=int(max_images_eff),
         range_size=int(RANGE_SIZE),
         stop_on_rate_limit=bool(STOP_ON_RATE_LIMIT),
         input_images_dir=INPUT_IMAGES_DIR,
