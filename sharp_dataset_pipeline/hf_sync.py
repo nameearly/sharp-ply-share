@@ -112,6 +112,14 @@ def _hf_range_progress_repo_path(range_start: int, range_end: int) -> str:
     return name
 
 
+def _hf_range_done_prefix_repo_path() -> str:
+    base = str(_RANGE_PROGRESS_DIR).strip().strip('/')
+    name = "done_prefix.json"
+    if base:
+        return f"{base}/{name}"
+    return name
+
+
 def _hf_range_abandoned_repo_path(range_start: int, range_end: int) -> str:
     base = str(_RANGE_ABANDONED_DIR).strip().strip('/')
     name = f"{int(range_start)}-{int(range_end)}.json"
@@ -460,7 +468,7 @@ class LockDoneSync:
         self.repo_id = repo_id
         self.instance_id = uuid.uuid4().hex
         self.lock = threading.Lock()
-        self.done = _hf_try_list_dir_ids(repo_id, _HF_DONE_DIR)
+        self.done = set()
         self._recent = {}
 
     def is_done(self, image_id: str) -> bool:
@@ -555,8 +563,17 @@ class RangeLockSync:
         self.repo_id = repo_id
         self.instance_id = uuid.uuid4().hex
         self.lock = threading.Lock()
-        self.done_ranges = _hf_try_list_dir_ranges(repo_id, _RANGE_DONE_DIR) if _RANGE_DONE_DIR else set()
-        self.done_prefix = self._compute_done_prefix(self.done_ranges)
+        self.done_ranges = set()
+        self.done_prefix = 0
+        self.range_size = None
+        try:
+            obj = _hf_try_read_json(self.repo_id, _hf_range_done_prefix_repo_path())
+            if isinstance(obj, dict):
+                dp = obj.get('done_prefix')
+                if dp is not None:
+                    self.done_prefix = int(dp)
+        except Exception:
+            self.done_prefix = 0
         self._last_heartbeat_ts = {}
         self._last_progress_ts = {}
         self._last_abandoned_ts = {}
@@ -580,11 +597,44 @@ class RangeLockSync:
 
     def refresh_done_prefix(self) -> int:
         try:
-            done_ranges = _hf_try_list_dir_ranges(self.repo_id, _RANGE_DONE_DIR) if _RANGE_DONE_DIR else set()
+            obj = _hf_try_read_json(self.repo_id, _hf_range_done_prefix_repo_path())
+            if isinstance(obj, dict):
+                dp = obj.get('done_prefix')
+                if dp is not None:
+                    with self.lock:
+                        self.done_prefix = int(dp)
+                        return int(self.done_prefix)
+        except Exception:
+            pass
+
+        try:
+            if not _RANGE_DONE_DIR:
+                return int(self.done_prefix or 0)
             with self.lock:
-                self.done_ranges = done_ranges
-                self.done_prefix = self._compute_done_prefix(done_ranges)
-                return int(self.done_prefix)
+                dp = int(self.done_prefix or 0)
+                rs = self.range_size
+            if rs is None:
+                return int(dp)
+            rs = int(rs)
+            if rs <= 0:
+                return int(dp)
+
+            advanced = False
+            for _ in range(0, 30):
+                a = int(dp)
+                b = int(a + rs - 1)
+                if hf_file_exists_cached(self.repo_id, _hf_range_done_repo_path(a, b), ttl_s=60.0):
+                    dp = int(b + 1)
+                    advanced = True
+                    continue
+                break
+
+            if advanced:
+                payload = {"done_prefix": int(dp)}
+                _hf_try_write_json(self.repo_id, _hf_range_done_prefix_repo_path(), payload, "range done prefix")
+                with self.lock:
+                    self.done_prefix = int(dp)
+            return int(dp)
         except Exception:
             return int(self.done_prefix or 0)
 
@@ -594,8 +644,15 @@ class RangeLockSync:
         try:
             if _RANGE_DONE_DIR:
                 with self.lock:
-                    if (int(range_start), int(range_end)) in (self.done_ranges or set()):
+                    dp = int(self.done_prefix or 0)
+                    if int(range_end) < int(dp):
                         return False
+        except Exception:
+            pass
+
+        try:
+            if _RANGE_DONE_DIR and hf_file_exists_cached(self.repo_id, _hf_range_done_repo_path(int(range_start), int(range_end)), ttl_s=60.0):
+                return False
         except Exception:
             pass
 
@@ -690,9 +747,26 @@ class RangeLockSync:
     def mark_done_range(self, range_start: int, range_end: int) -> bool:
         ok = _hf_try_write_range_done(self.repo_id, range_start, range_end)
         if ok:
-            with self.lock:
-                if self.done_ranges is None:
-                    self.done_ranges = set()
-                self.done_ranges.add((int(range_start), int(range_end)))
-                self.done_prefix = self._compute_done_prefix(self.done_ranges)
+            try:
+                with self.lock:
+                    dp = int(self.done_prefix or 0)
+                    rs = self.range_size
+                if rs is not None:
+                    rs = int(rs)
+                if rs is not None and rs > 0:
+                    if int(range_start) <= int(dp) <= int(range_end) + 1:
+                        dp = int(max(int(dp), int(range_end) + 1))
+                    for _ in range(0, 30):
+                        a = int(dp)
+                        b = int(a + int(rs) - 1)
+                        if hf_file_exists_cached(self.repo_id, _hf_range_done_repo_path(a, b), ttl_s=10.0):
+                            dp = int(b + 1)
+                            continue
+                        break
+                    payload = {"done_prefix": int(dp)}
+                    _hf_try_write_json(self.repo_id, _hf_range_done_prefix_repo_path(), payload, "range done prefix")
+                    with self.lock:
+                        self.done_prefix = int(dp)
+            except Exception:
+                pass
         return bool(ok)

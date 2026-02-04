@@ -16,6 +16,14 @@ configs:
 - GitHub (pipeline code): https://github.com/nameearly/sharp-ply-share
 - Hugging Face (dataset): https://huggingface.co/datasets/eatmorefruit/sharp-ply-share
 
+## Pipeline coordination / dedup (for multi-client runs)
+
+- Candidate limit: `MAX_CANDIDATES` limits how many photos are considered; `MAX_IMAGES` limits how many are actually downloaded/processed.
+- Remote done check: `HF_DONE_BACKEND=index` uses the HF index file (`data/train.jsonl`) as a local in-memory done set, and periodically refreshes it for collaborator correctness (`HF_INDEX_REFRESH_SECS`).
+- Range locks (list + oldest): range coordination is stored on HF under `ranges/locks`, `ranges/done`, and `ranges/progress`.
+- Range done prefix: `ranges/progress/done_prefix.json` is used to avoid repo-wide listings of `ranges/done/`.
+- Ant-style range selection (optional): `ANT_ENABLED=1` with `ANT_CANDIDATE_RANGES`, `ANT_EPSILON`, `ANT_FRESH_SECS` to reduce contention across multiple clients.
+
 ## Data fields
 
 Each row in `data/train.jsonl` is a JSON object with stable (string) types for fields that commonly drift (to keep the Dataset Viewer working reliably).

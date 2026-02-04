@@ -1,5 +1,7 @@
 import os
 import time
+import math
+import random
 import threading
 import queue
 import signal
@@ -30,7 +32,7 @@ class PipelineConfig:
     list_auto_seek: bool
     list_seek_back_pages: int
 
-    max_scan: int
+    max_candidates: int
     max_images: int
 
     range_size: int
@@ -455,6 +457,7 @@ def download_loop(
     lock: threading.Lock,
     coord: hf_sync.LockDoneSync | None,
     range_coord: hf_sync.RangeLockSync | None,
+    remote_done_fn,
     local_has_focal_exif_fn,
     inject_focal_exif_if_missing_fn,
     debug_fn,
@@ -471,11 +474,45 @@ def download_loop(
     active_range_acquired_ts = None
     last_range_meta_ts = 0.0
 
-    while (not stop_event.is_set()) and scanned < int(cfg.max_scan):
+    ant_enabled = str(os.getenv("ANT_ENABLED", "1") or "1").strip().lower() in ("1", "true", "yes", "y")
+    try:
+        ant_candidates = int(str(os.getenv("ANT_CANDIDATE_RANGES", "6") or "6").strip())
+    except Exception:
+        ant_candidates = 6
+    try:
+        ant_epsilon = float(str(os.getenv("ANT_EPSILON", "0.2") or "0.2").strip())
+    except Exception:
+        ant_epsilon = 0.2
+    try:
+        ant_fresh_secs = float(str(os.getenv("ANT_FRESH_SECS", "90") or "90").strip())
+    except Exception:
+        ant_fresh_secs = 90.0
+    ant_candidates = max(1, min(int(ant_candidates), 20))
+    ant_epsilon = max(0.0, min(float(ant_epsilon), 1.0))
+    ant_fresh_secs = max(1.0, float(ant_fresh_secs))
+
+    ant_scanned = 0
+    ant_remote_done = 0
+    ant_downloaded = 0
+    ant_errors = 0
+
+    def _limit_reached(v: int, limit: int) -> bool:
+        try:
+            lim = int(limit)
+        except Exception:
+            lim = 0
+        if lim < 0:
+            return False
+        try:
+            return int(v) >= lim
+        except Exception:
+            return True
+
+    while (not stop_event.is_set()) and (not _limit_reached(scanned, int(cfg.max_candidates))):
         order_is_oldest = False
         if not gate(cfg, stop_event):
             break
-        if downloaded_images >= int(cfg.max_images):
+        if _limit_reached(downloaded_images, int(cfg.max_images)):
             break
         if cfg.stop_on_rate_limit and unsplash.is_rate_limited():
             try:
@@ -536,11 +573,13 @@ def download_loop(
                         range_size = max(int(pp), int(cfg.range_size))
                         range_pages = int((range_size + int(pp) - 1) // int(pp))
                         range_size = int(range_pages * int(pp))
+                        try:
+                            range_coord.range_size = int(range_size)
+                        except Exception:
+                            pass
                         offset = max(0, (int(page) - 1) * int(pp))
                         base_idx = int(offset // range_size)
 
-                        # Smarter selection to reduce contention across multiple clients.
-                        # Try several candidate ranges with a deterministic step based on instance id.
                         step = 1
                         try:
                             step = 1 + (abs(hash(str(getattr(range_coord, 'instance_id', '')))) % 3)
@@ -549,15 +588,65 @@ def download_loop(
 
                         acquired = False
                         last_end_page = None
-                        for i in range(0, 6):
+                        candidates = []
+                        now = time.time()
+                        try:
+                            seed = abs(hash(str(getattr(range_coord, 'instance_id', ''))))
+                            seed = int(seed + int(now // 60))
+                        except Exception:
+                            seed = int(now // 60)
+                        rng = random.Random(seed)
+
+                        for i in range(0, int(ant_candidates)):
                             cand_idx = int(base_idx + i * step)
                             range_start = int(cand_idx * range_size)
                             range_end = int(range_start + range_size - 1)
                             start_page = int(range_start // int(pp)) + 1
                             end_page = int((range_end // int(pp)) + 1)
                             last_end_page = int(end_page)
-                            if range_coord.try_lock_range(range_start, range_end):
-                                active_range = (range_start, range_end)
+
+                            score = 1.0
+                            if ant_enabled and (range_coord is not None):
+                                try:
+                                    p = range_coord.read_progress(int(range_start), int(range_end))
+                                except Exception:
+                                    p = None
+                                if isinstance(p, dict) and p:
+                                    try:
+                                        ps = int(p.get('ant_scanned') or 0)
+                                    except Exception:
+                                        ps = 0
+                                    try:
+                                        pd = int(p.get('ant_downloaded') or 0)
+                                    except Exception:
+                                        pd = 0
+                                    try:
+                                        pr = int(p.get('ant_remote_done') or 0)
+                                    except Exception:
+                                        pr = 0
+                                    try:
+                                        upd = float(p.get('_updated_at') or 0.0)
+                                    except Exception:
+                                        upd = 0.0
+                                    age = float(now) - float(upd)
+                                    yld = float(pd) / float(ps + pr + 1)
+                                    score = float(yld) + 0.05 * math.log1p(float(pd))
+                                    if age < float(ant_fresh_secs):
+                                        score = float(score) - 1.0
+                            candidates.append((float(score), int(i), int(range_start), int(range_end), int(start_page), int(end_page)))
+
+                        if ant_enabled and candidates:
+                            try:
+                                if rng.random() < float(ant_epsilon):
+                                    rng.shuffle(candidates)
+                                else:
+                                    candidates.sort(key=lambda x: (float(x[0]), -int(x[1])), reverse=True)
+                            except Exception:
+                                pass
+
+                        for _score, _i, range_start, range_end, start_page, end_page in (candidates or []):
+                            if range_coord.try_lock_range(int(range_start), int(range_end)):
+                                active_range = (int(range_start), int(range_end))
                                 active_range_start_page = int(start_page)
                                 active_range_end_page = int(end_page)
                                 active_range_acquired_ts = time.time()
@@ -567,15 +656,34 @@ def download_loop(
                                     frontier_offset=int(range_start),
                                 )
 
-                                # Restore persisted progress if available.
+                                ant_scanned = 0
+                                ant_remote_done = 0
+                                ant_downloaded = 0
+                                ant_errors = 0
+
                                 try:
                                     p = range_coord.read_progress(int(range_start), int(range_end))
                                     if isinstance(p, dict) and p:
                                         range_progress.apply_dict(p)
+                                        try:
+                                            ant_scanned = int(p.get('ant_scanned') or 0)
+                                        except Exception:
+                                            ant_scanned = 0
+                                        try:
+                                            ant_remote_done = int(p.get('ant_remote_done') or 0)
+                                        except Exception:
+                                            ant_remote_done = 0
+                                        try:
+                                            ant_downloaded = int(p.get('ant_downloaded') or 0)
+                                        except Exception:
+                                            ant_downloaded = 0
+                                        try:
+                                            ant_errors = int(p.get('ant_errors') or 0)
+                                        except Exception:
+                                            ant_errors = 0
                                 except Exception:
                                     pass
 
-                                # Best-effort: align page to restored frontier.
                                 try:
                                     fp = int(range_progress.frontier // int(pp)) + 1
                                     if int(page) < int(fp):
@@ -588,7 +696,6 @@ def download_loop(
                                 break
 
                         if not acquired:
-                            # Couldn't lock any candidates; skip forward.
                             page = int(last_end_page or int(page)) + 1
                             continue
                     except Exception:
@@ -632,6 +739,10 @@ def download_loop(
                                 "active_range_start_page": int(active_range_start_page or 0),
                                 "active_range_end_page": int(active_range_end_page or 0),
                                 "acquired_at": float(active_range_acquired_ts or 0.0),
+                                "ant_scanned": int(ant_scanned),
+                                "ant_remote_done": int(ant_remote_done),
+                                "ant_downloaded": int(ant_downloaded),
+                                "ant_errors": int(ant_errors),
                             },
                         )
                 except Exception:
@@ -674,7 +785,7 @@ def download_loop(
             photo = (photos or [])[idx_in_page]
             if not gate(cfg, stop_event):
                 break
-            if scanned >= int(cfg.max_scan) or downloaded_images >= int(cfg.max_images):
+            if _limit_reached(scanned, int(cfg.max_candidates)) or _limit_reached(downloaded_images, int(cfg.max_images)):
                 break
 
             photo_id = str((photo or {}).get("id"))
@@ -693,26 +804,6 @@ def download_loop(
                 except Exception:
                     pass
 
-            if order_is_oldest and (range_coord is not None) and cfg.hf_repo_id:
-                try:
-                    with lock:
-                        local_checked = (photo_id in checked_ids)
-                except Exception:
-                    local_checked = (photo_id in checked_ids)
-                if not local_checked:
-                    if hf_sync.hf_file_exists_cached(cfg.hf_repo_id, hf_sync.hf_done_repo_path(photo_id)):
-                        if (range_progress is not None) and (photo_offset is not None):
-                            try:
-                                range_progress.mark_done(int(photo_offset))
-                            except Exception:
-                                pass
-                        try:
-                            with lock:
-                                checked_ids.add(photo_id)
-                        except Exception:
-                            pass
-                        continue
-
             try:
                 with lock:
                     if photo_id in checked_ids:
@@ -721,40 +812,87 @@ def download_loop(
                 if photo_id in checked_ids:
                     continue
 
-            if coord is not None:
-                extra = None
-                if order_is_oldest:
+            if cfg.hf_repo_id:
+                remote_done = False
+                try:
+                    if remote_done_fn is not None:
+                        remote_done = bool(remote_done_fn(photo_id))
+                except Exception:
+                    remote_done = False
+                if (not remote_done) and (remote_done_fn is None) and hf_sync.hf_file_exists_cached(
+                    cfg.hf_repo_id, hf_sync.hf_done_repo_path(photo_id)
+                ):
+                    remote_done = True
+                if remote_done:
                     try:
-                        extra = str(int((int(page) - 1) * int(pp) + int(idx_in_page)))
-                    except Exception:
-                        extra = None
-                st, retry_after = coord.try_lock_status(photo_id, extra=extra)
-                if st != "acquired":
-                    if (range_progress is not None) and (photo_offset is not None):
-                        try:
-                            if st == "locked_by_other" and retry_after is not None:
-                                range_progress.mark_claimed_until(int(photo_offset), float(retry_after))
-                            elif st == "error":
-                                range_progress.mark_error_retry(int(photo_offset), 30.0)
-                        except Exception:
-                            pass
-                    continue
-                if (range_progress is not None) and (photo_offset is not None):
-                    try:
-                        if retry_after is not None:
-                            range_progress.mark_claimed_until(int(photo_offset), float(retry_after))
-                        else:
-                            range_progress.mark_claimed(int(photo_offset), float(cfg.hf_lock_stale_secs))
+                        if (order_is_oldest and (range_coord is not None) and (active_range is not None)):
+                            ant_remote_done = int(ant_remote_done) + 1
                     except Exception:
                         pass
+                    if (range_progress is not None) and (photo_offset is not None):
+                        try:
+                            range_progress.mark_done(int(photo_offset))
+                        except Exception:
+                            pass
+                    try:
+                        with lock:
+                            checked_ids.add(photo_id)
+                    except Exception:
+                        pass
+                    continue
+
+            if coord is not None:
+                if order_is_oldest and (range_coord is not None) and (active_range is not None):
+                    pass
+                else:
+                    extra = None
+                    if order_is_oldest:
+                        try:
+                            extra = str(int((int(page) - 1) * int(pp) + int(idx_in_page)))
+                        except Exception:
+                            extra = None
+                    st, retry_after = coord.try_lock_status(photo_id, extra=extra)
+                    if st != "acquired":
+                        if (range_progress is not None) and (photo_offset is not None):
+                            try:
+                                if st == "locked_by_other" and retry_after is not None:
+                                    range_progress.mark_claimed_until(int(photo_offset), float(retry_after))
+                                elif st == "error":
+                                    range_progress.mark_error_retry(int(photo_offset), 30.0)
+                            except Exception:
+                                pass
+                        continue
+                    if (range_progress is not None) and (photo_offset is not None):
+                        try:
+                            if retry_after is not None:
+                                range_progress.mark_claimed_until(int(photo_offset), float(retry_after))
+                            else:
+                                range_progress.mark_claimed(int(photo_offset), float(cfg.hf_lock_stale_secs))
+                        except Exception:
+                            pass
 
             scanned += 1
+            try:
+                if (order_is_oldest and (range_coord is not None) and (active_range is not None)):
+                    ant_scanned = int(ant_scanned) + 1
+            except Exception:
+                pass
             details = unsplash.fetch_photo_details(photo_id)
             if not details:
+                try:
+                    if (order_is_oldest and (range_coord is not None) and (active_range is not None)):
+                        ant_errors = int(ant_errors) + 1
+                except Exception:
+                    pass
                 continue
             src = details
             download_location = ((src.get("links") or {}).get("download_location")) if isinstance(src, dict) else None
             if not download_location:
+                try:
+                    if (order_is_oldest and (range_coord is not None) and (active_range is not None)):
+                        ant_errors = int(ant_errors) + 1
+                except Exception:
+                    pass
                 continue
 
             meta = {}
@@ -800,6 +938,11 @@ def download_loop(
             else:
                 ok = True
             if not ok:
+                try:
+                    if (order_is_oldest and (range_coord is not None) and (active_range is not None)):
+                        ant_errors = int(ant_errors) + 1
+                except Exception:
+                    pass
                 continue
 
             if cfg.inject_exif and (local_has_focal_exif_fn is not None) and (not local_has_focal_exif_fn(out_path)):
@@ -829,13 +972,18 @@ def download_loop(
                 pass
 
             downloaded_images += 1
+            try:
+                if (order_is_oldest and (range_coord is not None) and (active_range is not None)):
+                    ant_downloaded = int(ant_downloaded) + 1
+            except Exception:
+                pass
 
         page += 1
 
         if (active_range is not None) and (active_range_end_page is not None) and (range_coord is not None):
             try:
                 if int(page) > int(active_range_end_page):
-                    if downloaded_images >= int(cfg.max_images) or stop_event.is_set() or stop_requested(cfg):
+                    if _limit_reached(downloaded_images, int(cfg.max_images)) or stop_event.is_set() or stop_requested(cfg):
                         try:
                             a, b = active_range
                             range_coord.mark_abandoned_range(int(a), int(b), "stopped_or_max_images")
@@ -865,16 +1013,14 @@ def download_loop(
                 active_range_end_page = None
                 range_progress = None
                 active_range_acquired_ts = None
-
-    # If we exit early while holding a range (did not reach mark_done_range), record it for observability.
     if (active_range is not None) and (range_coord is not None):
         try:
             a, b = active_range
             reason = "loop_exit"
-            if downloaded_images >= int(cfg.max_images):
+            if _limit_reached(downloaded_images, int(cfg.max_images)):
                 reason = "max_images"
-            elif scanned >= int(cfg.max_scan):
-                reason = "max_scan"
+            elif _limit_reached(scanned, int(cfg.max_candidates)):
+                reason = "max_candidates"
             elif stop_event.is_set() or stop_requested(cfg):
                 reason = "stopped"
             elif cfg.stop_on_rate_limit and unsplash.is_rate_limited():
@@ -900,6 +1046,7 @@ def run(
     checked_ids: set,
     coord: hf_sync.LockDoneSync | None,
     range_coord: hf_sync.RangeLockSync | None,
+    remote_done_fn,
     index_sync,
     upload_sample_pair_fn,
     try_super_squash_fn,
@@ -1072,6 +1219,7 @@ def run(
                     lock,
                     coord,
                     range_coord,
+                    remote_done_fn,
                     local_has_focal_exif_fn,
                     inject_focal_exif_if_missing_fn,
                     debug_fn,

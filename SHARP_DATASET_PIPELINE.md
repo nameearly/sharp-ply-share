@@ -75,8 +75,13 @@ Defaults:
 
 ### Scan limits
 
-- `MAX_SCAN`: max photos to scan per cycle (default: `200`)
+- `MAX_CANDIDATES`: max candidate photos to consider per run (default: `200`).
 - `MAX_IMAGES`: max images to download per run (default: `50`)
+
+Notes:
+
+- `MAX_IMAGES` is the main limiter for how many samples will be produced/processed.
+- Use `-1` for unlimited.
 
 ### SHARP / ml-sharp
 
@@ -113,6 +118,23 @@ Defaults:
 - `HF_INDEX_REPO_PATH`: index path in repo (default: `data/train.jsonl`)
 - `HF_INDEX_FLUSH_EVERY`: flush every N rows (default: `20`)
 - `HF_INDEX_FLUSH_SECS`: flush at least every N seconds (default: `30`)
+- `HF_INDEX_REFRESH_SECS`: refresh remote index for collaborator correctness when `HF_DONE_BACKEND=index` (default: `300`)
+
+### Remote done check backend (optional)
+
+To reduce Hub small-file requests, you can choose how the pipeline checks whether an `image_id` has already been processed remotely:
+
+- `HF_DONE_BACKEND`:
+  - `index` (default): use the local in-memory set populated from the HF index file (`HF_INDEX_REPO_PATH`) when available.
+  - `parquet` / `viewer`: use datasets-server Parquet filter queries.
+  - `duckdb`: query the dataset Parquet exports locally via DuckDB (requires `duckdb` installed).
+  - `none`: disable remote done checking.
+
+Related variables (for `parquet`/`duckdb`):
+
+- `HF_DONE_DATASET` (default: `HF_REPO_ID`)
+- `HF_DONE_CONFIG`, `HF_DONE_SPLIT` (optional; auto-resolved for `parquet` if omitted)
+- `HF_DONE_COLUMN` (default: `image_id`)
 
 ### gsplat.org share (optional)
 
@@ -131,6 +153,17 @@ Defaults:
 - `RANGE_LOCK_STALE_SECS`: range lock TTL (default: `21600`)
 - `RANGE_SIZE`: range size in items (default: `300`)
 - `RANGE_LOCK_MIN_IMAGES`: do not enable range-lock if `MAX_IMAGES` is smaller (default: `30`)
+
+Notes:
+
+- Range done detection uses a shared prefix file at `ranges/progress/done_prefix.json` to avoid repo-wide listings of `ranges/done/`.
+
+### Ant-style range selection (optional, for multi-client coordination)
+
+- `ANT_ENABLED`: enable ant-style range selection (default: `1`)
+- `ANT_CANDIDATE_RANGES`: number of candidate ranges to score before locking (default: `6`)
+- `ANT_EPSILON`: probability of random exploration vs greedy choice (default: `0.2`)
+- `ANT_FRESH_SECS`: treat recently-updated ranges as “busy” and de-prioritize them (default: `90`)
 
 
 ## Module layout

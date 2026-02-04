@@ -12,6 +12,7 @@ import sharp_dataset_pipeline.pipeline as pipeline
 import sharp_dataset_pipeline.hf_utils as hf_utils
 import sharp_dataset_pipeline.hf_upload as hf_upload
 import sharp_dataset_pipeline.index_sync as hf_index_sync
+import sharp_dataset_pipeline.parquet_tools as parquet_tools
 
 def _env_flag(name: str, default: bool) -> bool:
     v = os.getenv(name)
@@ -67,7 +68,7 @@ SAVE_DIR = os.path.join(OUTPUT_DIR, "runs", RUN_ID)
 IMAGES_DIR = os.path.join(SAVE_DIR, "images")
 GAUSSIANS_DIR = os.path.join(SAVE_DIR, "gaussians")
 SOURCE = _env_str("SOURCE", "list").strip().lower()  # search | list
-MAX_SCAN = _env_int("MAX_SCAN", 200)
+MAX_CANDIDATES = _env_int("MAX_CANDIDATES", 200)
 MAX_IMAGES = _env_int("MAX_IMAGES", 50)
 INJECT_EXIF = _env_flag("INJECT_EXIF", True)
 STOP_ON_RATE_LIMIT = _env_flag("STOP_ON_RATE_LIMIT", True)
@@ -134,6 +135,7 @@ HF_LOCK_STALE_SECS = float(os.getenv("HF_LOCK_STALE_SECS", "21600"))
 HF_WRITE_INDEX = _env_flag("HF_WRITE_INDEX", True)
 HF_INDEX_FLUSH_EVERY = _env_int("HF_INDEX_FLUSH_EVERY", 20)
 HF_INDEX_FLUSH_SECS = float(os.getenv("HF_INDEX_FLUSH_SECS", "30"))
+HF_INDEX_REFRESH_SECS = float(os.getenv("HF_INDEX_REFRESH_SECS", "300"))
 
 GSPLAT_BASE = _env_str("GSPLAT_BASE", "https://gsplat.org").strip().rstrip("/")
 GSPLAT_EXPIRATION_TYPE = _env_str("GSPLAT_EXPIRATION_TYPE", "1week").strip()
@@ -584,10 +586,6 @@ def run_pipeline():
     coord = None
     if (not SKIP_PREDICT) and HF_UPLOAD and HF_USE_LOCKS and HF_REPO_ID:
         coord = hf_sync.LockDoneSync(HF_REPO_ID)
-        remote_done = set(coord.done or set())
-        if remote_done:
-            missing = sorted([x for x in remote_done if x not in checked_ids])
-            checked_ids |= set(remote_done)
 
     range_coord = None
     # 小贡献者保护：MAX_IMAGES 太小就不启用 range-lock，避免锁住大区间。
@@ -596,7 +594,7 @@ def run_pipeline():
         and HF_REPO_ID
         and SOURCE == "list"
         and bool(RANGE_LOCKS_ENABLED)
-        and int(MAX_IMAGES) >= int(RANGE_LOCK_MIN_IMAGES)
+        and (int(MAX_IMAGES) < 0 or int(MAX_IMAGES) >= int(RANGE_LOCK_MIN_IMAGES))
     ):
         try:
             range_coord = hf_sync.RangeLockSync(HF_REPO_ID)
@@ -629,10 +627,77 @@ def run_pipeline():
                 hf_upload=HF_UPLOAD,
                 hf_index_flush_every=HF_INDEX_FLUSH_EVERY,
                 hf_index_flush_secs=HF_INDEX_FLUSH_SECS,
+                hf_index_refresh_secs=HF_INDEX_REFRESH_SECS,
                 debug_fn=print_debug,
             )
         except Exception:
             index_sync_obj = None
+
+    remote_done_fn = None
+    try:
+        backend = str(os.getenv("HF_DONE_BACKEND", "index") or "").strip().lower()
+    except Exception:
+        backend = "index"
+
+    if backend in ("none", "disabled"):
+        remote_done_fn = None
+    elif backend in ("index", "jsonl"):
+        try:
+            if index_sync_obj is not None:
+                def _remote_done_index(pid):
+                    try:
+                        index_sync_obj.maybe_refresh(False)
+                    except Exception:
+                        pass
+                    return str(pid) in (index_sync_obj.indexed or set())
+
+                remote_done_fn = _remote_done_index
+        except Exception:
+            remote_done_fn = None
+    elif backend in ("parquet", "viewer"):
+        try:
+            ds = str(os.getenv("HF_DONE_DATASET", HF_REPO_ID) or "").strip()
+            tok = str(os.getenv("HF_TOKEN", "") or "").strip() or None
+            cfg_name = str(os.getenv("HF_DONE_CONFIG", "") or "").strip()
+            split_name = str(os.getenv("HF_DONE_SPLIT", "") or "").strip()
+            col = str(os.getenv("HF_DONE_COLUMN", "image_id") or "image_id").strip() or "image_id"
+            if (not cfg_name) or (not split_name):
+                sp = parquet_tools.viewer_splits(dataset=ds, token=tok)
+                try:
+                    first = ((sp.get("splits") or [])[0]) if isinstance(sp, dict) else None
+                    cfg_name = cfg_name or str((first or {}).get("config") or "").strip()
+                    split_name = split_name or str((first or {}).get("split") or "").strip()
+                except Exception:
+                    pass
+            if ds and cfg_name and split_name:
+                remote_done_fn = lambda pid: parquet_tools.viewer_filter_contains(
+                    dataset=ds,
+                    config=cfg_name,
+                    split=split_name,
+                    column=col,
+                    value=str(pid),
+                    token=tok,
+                )
+        except Exception:
+            remote_done_fn = None
+    elif backend in ("duckdb",):
+        try:
+            ds = str(os.getenv("HF_DONE_DATASET", HF_REPO_ID) or "").strip()
+            tok = str(os.getenv("HF_TOKEN", "") or "").strip() or None
+            cfg_name = str(os.getenv("HF_DONE_CONFIG", "") or "").strip() or None
+            split_name = str(os.getenv("HF_DONE_SPLIT", "") or "").strip() or None
+            col = str(os.getenv("HF_DONE_COLUMN", "image_id") or "image_id").strip() or "image_id"
+            if ds:
+                remote_done_fn = lambda pid: parquet_tools.duckdb_contains(
+                    dataset=ds,
+                    config=cfg_name,
+                    split=split_name,
+                    column=col,
+                    value=str(pid),
+                    token=tok,
+                )
+        except Exception:
+            remote_done_fn = None
 
     def _upload_sample_pair(repo_id: str, image_id: str, image_path: str, ply_path: str):
         return hf_upload.upload_sample_pair(
@@ -671,7 +736,7 @@ def run_pipeline():
         list_per_page=int(LIST_PER_PAGE),
         list_auto_seek=bool(LIST_AUTO_SEEK),
         list_seek_back_pages=int(LIST_SEEK_BACK_PAGES),
-        max_scan=int(MAX_SCAN),
+        max_candidates=int(MAX_CANDIDATES),
         max_images=int(MAX_IMAGES),
         range_size=int(RANGE_SIZE),
         stop_on_rate_limit=bool(STOP_ON_RATE_LIMIT),
@@ -705,6 +770,7 @@ def run_pipeline():
         checked_ids=checked_ids,
         coord=coord,
         range_coord=range_coord,
+        remote_done_fn=remote_done_fn,
         index_sync=index_sync_obj,
         upload_sample_pair_fn=_upload_sample_pair,
         try_super_squash_fn=_hf_try_super_squash,
@@ -718,6 +784,70 @@ def run_pipeline():
 
 def main():
     print_debug("===== 脚本启动：全量验焦+本地防重 =====")
+    pmode = str(os.getenv("PARQUET_MODE", "") or "").strip().lower()
+    if pmode:
+        dataset = str(os.getenv("PARQUET_DATASET", HF_REPO_ID) or "").strip()
+        cfg = str(os.getenv("PARQUET_CONFIG", "") or "").strip()
+        split = str(os.getenv("PARQUET_SPLIT", "") or "").strip()
+        token = str(os.getenv("HF_TOKEN", "") or "").strip() or None
+        try:
+            if pmode in ("list", "parquet"):
+                try:
+                    obj = parquet_tools.viewer_list_parquet_files(dataset=dataset, token=token)
+                except Exception:
+                    obj = parquet_tools.hub_list_parquet_urls(dataset=dataset, token=token)
+                print_debug(json.dumps(obj, ensure_ascii=False, indent=2))
+                return
+
+            if pmode in ("rows", "jump"):
+                offset = int(str(os.getenv("PARQUET_OFFSET", "0") or "0").strip())
+                length = int(str(os.getenv("PARQUET_LENGTH", "100") or "100").strip())
+                obj = parquet_tools.viewer_rows(
+                    dataset=dataset,
+                    config=cfg,
+                    split=split,
+                    offset=offset,
+                    length=length,
+                    token=token,
+                )
+                print_debug(json.dumps(obj, ensure_ascii=False, indent=2))
+                return
+
+            if pmode == "search":
+                q = str(os.getenv("PARQUET_QUERY", "") or "").strip()
+                offset = int(str(os.getenv("PARQUET_OFFSET", "0") or "0").strip())
+                length = int(str(os.getenv("PARQUET_LENGTH", "100") or "100").strip())
+                obj = parquet_tools.viewer_search(
+                    dataset=dataset,
+                    config=cfg,
+                    split=split,
+                    query=q,
+                    offset=offset,
+                    length=length,
+                    token=token,
+                )
+                print_debug(json.dumps(obj, ensure_ascii=False, indent=2))
+                return
+
+            if pmode == "filter":
+                w = str(os.getenv("PARQUET_WHERE", "") or "").strip()
+                offset = int(str(os.getenv("PARQUET_OFFSET", "0") or "0").strip())
+                length = int(str(os.getenv("PARQUET_LENGTH", "100") or "100").strip())
+                obj = parquet_tools.viewer_filter(
+                    dataset=dataset,
+                    config=cfg,
+                    split=split,
+                    where=w,
+                    offset=offset,
+                    length=length,
+                    token=token,
+                )
+                print_debug(json.dumps(obj, ensure_ascii=False, indent=2))
+                return
+        except Exception as e:
+            print_debug(f"PARQUET_MODE failed | mode={pmode} | err={type(e).__name__}: {str(e)}")
+            return
+
     run_pipeline()
 
 if __name__ == "__main__":

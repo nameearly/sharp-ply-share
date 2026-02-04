@@ -18,6 +18,7 @@ class IndexSync:
         hf_upload: bool,
         hf_index_flush_every: int,
         hf_index_flush_secs: float,
+        hf_index_refresh_secs: float = 300.0,
         debug_fn,
     ):
         self.repo_id = str(repo_id or "").strip()
@@ -32,12 +33,16 @@ class IndexSync:
         self.hf_upload = bool(hf_upload)
         self.hf_index_flush_every = int(hf_index_flush_every)
         self.hf_index_flush_secs = float(hf_index_flush_secs)
+        self.hf_index_refresh_secs = float(hf_index_refresh_secs)
         self.debug_fn = debug_fn
 
         self.lock = threading.Lock()
         self.indexed: set[str] = set()
         self.pending = 0
         self.last_flush_ts = 0.0
+        self.last_refresh_ts = 0.0
+        self._refresh_inflight = False
+        self._last_remote_local = ""
 
         try:
             os.makedirs(self.save_dir, exist_ok=True)
@@ -195,6 +200,14 @@ class IndexSync:
 
             remote_local = hf_hub_download(repo_id=self.repo_id, repo_type=self.repo_type, filename=self.repo_path)
             try:
+                self._last_remote_local = str(remote_local or "")
+            except Exception:
+                self._last_remote_local = ""
+            try:
+                self.last_refresh_ts = time.time()
+            except Exception:
+                self.last_refresh_ts = 0.0
+            try:
                 shutil.copyfile(remote_local, self.local_path)
             except Exception:
                 try:
@@ -205,24 +218,83 @@ class IndexSync:
         except Exception:
             return
 
-    def _load_indexed_ids(self):
+    def _iter_ids_from_jsonl(self, path: str):
         try:
-            if not os.path.exists(self.local_path):
+            if not path or (not os.path.exists(path)):
                 return
-            with open(self.local_path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 for line in f:
                     s = line.strip()
                     if not s:
                         continue
                     try:
                         obj = json.loads(s)
-                        pid = str(obj.get("image_id") or "")
+                        pid = str(obj.get("image_id") or "").strip()
                         if pid:
-                            self.indexed.add(pid)
+                            yield pid
                     except Exception:
                         continue
         except Exception:
             return
+
+    def _load_indexed_ids(self):
+        try:
+            if not os.path.exists(self.local_path):
+                return
+            for pid in self._iter_ids_from_jsonl(self.local_path):
+                self.indexed.add(pid)
+        except Exception:
+            return
+
+    def maybe_refresh(self, force: bool = False) -> bool:
+        if (not self.repo_path) or (not self.repo_id):
+            return False
+
+        now = time.time()
+        try:
+            with self.lock:
+                if self._refresh_inflight:
+                    return False
+                if (not force) and (now - float(self.last_refresh_ts)) < float(self.hf_index_refresh_secs):
+                    return False
+                self._refresh_inflight = True
+        except Exception:
+            return False
+
+        remote_local = ""
+        changed = False
+        try:
+            from huggingface_hub import hf_hub_download
+
+            remote_local = hf_hub_download(repo_id=self.repo_id, repo_type=self.repo_type, filename=self.repo_path)
+            remote_local = str(remote_local or "")
+
+            try:
+                with self.lock:
+                    if remote_local and (remote_local == str(self._last_remote_local or "")):
+                        return False
+            except Exception:
+                pass
+
+            new_ids = set(self._iter_ids_from_jsonl(remote_local))
+            if new_ids:
+                with self.lock:
+                    before = len(self.indexed)
+                    self.indexed |= new_ids
+                    changed = len(self.indexed) > before
+        except Exception:
+            return False
+        finally:
+            try:
+                with self.lock:
+                    self.last_refresh_ts = now
+                    if remote_local:
+                        self._last_remote_local = remote_local
+                    self._refresh_inflight = False
+            except Exception:
+                pass
+
+        return bool(changed)
 
     def add_row(self, row: dict):
         norm = self._normalize_row(row)
