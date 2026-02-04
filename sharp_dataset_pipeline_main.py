@@ -92,7 +92,48 @@ def _load_unsplash_key_pool(json_path: str):
         obj = json.loads(s)
         return _normalize_items(obj)
     except Exception:
-        return []
+        pass
+
+    try:
+        s = str(raw or "")
+        blocks = []
+        try:
+            blocks = re.findall(r"\{[^{}]*\}", s, flags=re.DOTALL)
+        except Exception:
+            blocks = []
+
+        out = []
+        for b in blocks or []:
+            try:
+                km = re.search(r"\bUNSPLASH_ACCESS_KEY\s*:\s*['\"]([^'\"]+)['\"]", b)
+                if not km:
+                    km = re.search(r"\bunsplash_access_key\s*:\s*['\"]([^'\"]+)['\"]", b)
+                if not km:
+                    km = re.search(r"\baccess_key\s*:\s*['\"]([^'\"]+)['\"]", b)
+                if not km:
+                    continue
+                k = str(km.group(1) or "").strip()
+                if not k:
+                    continue
+
+                am = re.search(r"\bUNSPLASH_APP_NAME\s*:\s*['\"]([^'\"]+)['\"]", b)
+                if not am:
+                    am = re.search(r"\bunsplash_app_name\s*:\s*['\"]([^'\"]+)['\"]", b)
+                if not am:
+                    am = re.search(r"\bapp_name\s*:\s*['\"]([^'\"]+)['\"]", b)
+                an = str(am.group(1) if am else "").strip()
+
+                out.append({"UNSPLASH_ACCESS_KEY": k, "UNSPLASH_APP_NAME": an})
+            except Exception:
+                continue
+
+        out = _normalize_items(out)
+        if out:
+            return out
+    except Exception:
+        pass
+
+    return []
 
 def _choose_bucket_per_page(remaining: int, hard_max: int) -> int:
     try:
