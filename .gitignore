@@ -1,4 +1,5 @@
-UNSPLASH_ACCESS_KEY.json
+*.json
+
 # Python
 __pycache__/
 *.py[cod]
