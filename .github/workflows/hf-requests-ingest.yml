@@ -3,8 +3,7 @@ name: HF Requests Ingest
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/10 * * * *"  # self-adapt level=1
-
+    - cron: "*/30 * * * *"  # self-adapt level=3
 concurrency:
   group: hf-requests-ingest-cron
   cancel-in-progress: false

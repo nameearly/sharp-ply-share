@@ -3,8 +3,7 @@ name: HF Auto-Merge Additive PRs
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/10 * * * *"  # self-adapt level=1
-
+    - cron: "*/30 * * * *"  # self-adapt level=3
 concurrency:
   group: hf-auto-merge-additive-prs-cron
   cancel-in-progress: false
