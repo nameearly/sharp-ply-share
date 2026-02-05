@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from .progress import OrderedProgress
 from . import hf_sync
+from . import hf_upload
 from . import metrics
 from . import unsplash
 
@@ -333,10 +334,11 @@ def upload_worker(
     debug_fn,
 ):
     try:
-        batch_size = int(getattr(cfg, "hf_upload_batch_size", 1))
+        base_batch_size = int(getattr(cfg, "hf_upload_batch_size", 1))
     except Exception:
-        batch_size = 1
-    batch_size = max(1, min(int(batch_size), 64))
+        base_batch_size = 1
+    base_batch_size = max(1, min(int(base_batch_size), 64))
+    last_batch_size_eff = None
 
     try:
         batch_wait_ms = int(getattr(cfg, "hf_upload_batch_wait_ms", 0))
@@ -347,6 +349,21 @@ def upload_worker(
     while not stop_event.is_set():
         if not gate(cfg, stop_event):
             break
+
+        batch_size_eff = int(base_batch_size)
+        try:
+            if upload_sample_pairs_fn is not None:
+                batch_size_eff = int(hf_upload.recommended_hf_upload_batch_size(int(base_batch_size)))
+        except Exception:
+            batch_size_eff = int(base_batch_size)
+        batch_size_eff = max(1, min(int(batch_size_eff), 64))
+        try:
+            if last_batch_size_eff is None or int(last_batch_size_eff) != int(batch_size_eff):
+                last_batch_size_eff = int(batch_size_eff)
+                if debug_fn and int(batch_size_eff) != int(base_batch_size):
+                    debug_fn(f"HF_UPLOAD_BATCH_SIZE 自适应调整 | base={int(base_batch_size)} -> eff={int(batch_size_eff)}")
+        except Exception:
+            pass
         try:
             task = upload_q.get(timeout=0.5)
         except Exception:
@@ -361,13 +378,13 @@ def upload_worker(
             break
 
         batch = [task]
-        if batch_size > 1 and (upload_sample_pairs_fn is not None):
+        if batch_size_eff > 1 and (upload_sample_pairs_fn is not None):
             try:
                 end_ts = None
                 if int(batch_wait_ms) > 0:
                     end_ts = time.time() + (float(batch_wait_ms) / 1000.0)
 
-                for _ in range(0, int(batch_size) - 1):
+                for _ in range(0, int(batch_size_eff) - 1):
                     if stop_event.is_set() or stop_requested(cfg):
                         break
                     nxt = None
@@ -430,35 +447,38 @@ def upload_worker(
                 debug_fn(f"HF 上传完成 | image={info['image_url']} | ply={info['ply_url']}")
 
                 if coord is not None:
-                    ok_done = coord.mark_done(str(item["image_id"]))
-                    if ok_done:
+                    try:
+                        coord.mark_done(str(item["image_id"]))
+                    except Exception:
+                        pass
+
+                try:
+                    with lock:
+                        checked_ids.add(str(item["image_id"]))
+                except Exception:
+                    pass
+
+                if index_sync is not None:
+                    try:
+                        meta = item.get('meta') if isinstance(item, dict) else None
+                        row = {
+                            "image": info.get("image_url") if isinstance(info, dict) else None,
+                            "image_id": str(item["image_id"]),
+                            "image_url": info.get("image_url"),
+                            "ply_url": info.get("ply_url"),
+                        }
                         try:
-                            with lock:
-                                checked_ids.add(str(item["image_id"]))
+                            if isinstance(info, dict):
+                                for k, v in info.items():
+                                    if k not in row:
+                                        row[k] = v
                         except Exception:
                             pass
-
-                        if index_sync is not None:
-                            try:
-                                meta = item.get('meta') if isinstance(item, dict) else None
-                                row = {
-                                    "image": info.get("image_url") if isinstance(info, dict) else None,
-                                    "image_id": str(item["image_id"]),
-                                    "image_url": info.get("image_url"),
-                                    "ply_url": info.get("ply_url"),
-                                }
-                                try:
-                                    if isinstance(info, dict):
-                                        for k, v in info.items():
-                                            if k not in row:
-                                                row[k] = v
-                                except Exception:
-                                    pass
-                                if isinstance(meta, dict):
-                                    row.update(meta)
-                                index_sync.add_row(row)
-                            except Exception as e:
-                                _log_exc(debug_fn, f"写入 index 失败 | id={str(item.get('image_id'))}", e)
+                        if isinstance(meta, dict):
+                            row.update(meta)
+                        index_sync.add_row(row)
+                    except Exception as e:
+                        _log_exc(debug_fn, f"写入 index 失败 | id={str(item.get('image_id'))}", e)
 
                 to_delete = None
                 if cfg.ply_delete_after_upload and int(cfg.ply_keep_last) > 0:

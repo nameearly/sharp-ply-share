@@ -302,9 +302,8 @@ In addition to the normal pipeline control, `requests_worker` and `hybrid_worker
 
 Keyboard shortcuts:
 
-- `Ctrl+C`: pause / resume
-- Double `Ctrl+C` within `SIGINT_WINDOW_S` seconds: stop
-- `Ctrl+D` / `Ctrl+Z` (Windows): stop
+- On Windows consoles, press `p` to toggle pause/resume (create/delete `PAUSE`), and press `q` to request stop (create `STOP`).
+- `Ctrl+C` requests stop (safe-point semantics): the worker will stop at the next check without hard-killing in-flight work.
 
 ### Range locks (for `SOURCE=list` + `order_by=oldest`)
 

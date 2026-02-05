@@ -3,7 +3,11 @@ name: HF Requests Ingest
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/10 * * * *"  # every 10 minutes
+    - cron: "*/10 * * * *"  # self-adapt level=1
+
+concurrency:
+  group: hf-requests-ingest-cron
+  cancel-in-progress: false
 
 jobs:
   ingest:
@@ -14,6 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -26,6 +31,7 @@ jobs:
           python -m pip install "huggingface_hub>=0.24.0" requests
 
       - name: Ingest Discussion -> HF requests/
+        id: ingest
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HUGGINGFACE_HUB_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -38,4 +44,118 @@ jobs:
           REQ_DISCUSSION_NUM: "2"
           REQ_DIR: requests
         run: |
-          python -m sharp_dataset_pipeline.requests_worker
+          python - << 'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          p = subprocess.run(
+              [sys.executable, "-m", "sharp_dataset_pipeline.requests_worker"],
+              check=False,
+              capture_output=True,
+              text=True,
+          )
+          out = (p.stdout or "") + "\n" + (p.stderr or "")
+          sys.stdout.write(out)
+          sys.stdout.flush()
+
+          did_work = "0"
+          try:
+              m = re.findall(r"^REQ_RESULT\s+(\{.*\})\s*$", out, flags=re.MULTILINE)
+              if m:
+                  res = json.loads(m[-1])
+                  ing = int(res.get("ingested", 0) or 0)
+                  pro = int(res.get("processed", 0) or 0)
+                  if (ing + pro) > 0:
+                      did_work = "1"
+          except Exception:
+              did_work = "0"
+
+          gh_out = os.getenv("GITHUB_OUTPUT")
+          if gh_out:
+              with open(gh_out, "a", encoding="utf-8") as f:
+                  f.write(f"did_work={did_work}\n")
+          sys.exit(int(p.returncode or 0))
+          PY
+
+      - name: Self-adjust schedule cron
+        if: always()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          DID_WORK: ${{ steps.ingest.outputs.did_work }}
+        run: |
+          python - << 'PY'
+          import os
+          import re
+          import subprocess
+
+          pat = (os.getenv("GH_PAT") or "").strip()
+          if not pat:
+              print("GH_PAT not set; skipping cron self-adjust.")
+              raise SystemExit(0)
+
+          did_work = str(os.getenv("DID_WORK") or "0").strip()
+          repo = str(os.getenv("GITHUB_REPOSITORY") or "").strip()
+          ref_name = str(os.getenv("GITHUB_REF_NAME") or "main").strip() or "main"
+          if not repo:
+              print("Missing GITHUB_REPOSITORY; skipping.")
+              raise SystemExit(0)
+
+          path = ".github/workflows/hf-requests-ingest.yml"
+          with open(path, "r", encoding="utf-8") as f:
+              txt = f.read()
+
+          # Levels map to minutes; last entry uses hourly cron.
+          minutes = [5, 10, 20, 30, 60]
+          max_level = len(minutes) - 1
+
+          m = re.search(r"^\s*-\s*cron:\s*\"([^\"]+)\"\s*#\s*self-adapt\s+level=(\d+)\s*$", txt, flags=re.MULTILINE)
+          if not m:
+              print("Could not find self-adapt cron line; skipping.")
+              raise SystemExit(0)
+
+          old_level = int(m.group(2))
+          old_level = max(0, min(max_level, old_level))
+
+          if did_work == "1":
+              new_level = 0
+          else:
+              new_level = min(max_level, old_level + 1)
+
+          def level_to_cron(lv: int) -> str:
+              mm = int(minutes[lv])
+              if mm >= 60:
+                  return "0 * * * *"
+              return f"*/{mm} * * * *"
+
+          new_cron = level_to_cron(new_level)
+          old_line = m.group(0)
+          indent = re.match(r"^(\s*)-\s*cron:", old_line).group(1)
+          new_line = f"{indent}- cron: \"{new_cron}\"  # self-adapt level={new_level}"
+          if old_line.strip() == new_line.strip():
+              print("Cron unchanged; no commit.")
+              raise SystemExit(0)
+
+          txt2 = txt.replace(old_line, new_line, 1)
+          with open(path, "w", encoding="utf-8") as f:
+              f.write(txt2)
+
+          subprocess.check_call(["git", "config", "user.name", "gha-cron-bot"])
+          subprocess.check_call(["git", "config", "user.email", "gha-cron-bot@users.noreply.github.com"])
+          subprocess.check_call(["git", "add", path])
+
+          # If nothing actually staged, skip.
+          st = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=False)
+          if not (st.stdout or "").strip():
+              print("No changes staged; skipping.")
+              raise SystemExit(0)
+
+          subprocess.check_call(["git", "commit", "-m", f"chore(gha): self-adjust ingest cron -> level {new_level}"])
+
+          remote = f"https://x-access-token:{pat}@github.com/{repo}.git"
+          subprocess.check_call(["git", "remote", "set-url", "origin", remote])
+          subprocess.check_call(["git", "push", "origin", f"HEAD:{ref_name}"])
+          print(f"Updated cron to: {new_cron} (level={new_level})")
+          PY

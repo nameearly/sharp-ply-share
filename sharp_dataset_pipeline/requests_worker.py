@@ -1148,6 +1148,13 @@ def run_once():
         processed = int(did)
 
     _print(f"run_once done | mode={mode} | processed={processed}")
+    try:
+        _print(
+            "REQ_RESULT "
+            + json.dumps({"mode": mode, "ingested": int(ingested), "processed": int(processed)}, ensure_ascii=False)
+        )
+    except Exception:
+        pass
     return {"mode": mode, "ingested": int(ingested), "processed": int(processed)}
 
 

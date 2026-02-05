@@ -132,6 +132,7 @@ SHARP_INPUT_DIR = os.getenv("SHARP_INPUT_DIR", "").strip()
 SKIP_PREDICT = _env_flag("SKIP_PREDICT", False)
 
 HF_UPLOAD = _env_flag("HF_UPLOAD", True)
+REQUIRE_HF_UPLOAD = _env_flag("REQUIRE_HF_UPLOAD", False)
 HF_REPO_ID = _env_str("HF_REPO_ID", "eatmorefruit/sharp-ply-share").strip()
 HF_SUBDIR = _env_str("HF_SUBDIR", "unsplash").strip().strip("/")
 HF_INDEX_REPO_PATH = _env_str("HF_INDEX_REPO_PATH", "data/train.jsonl").strip().lstrip("/")
@@ -176,6 +177,7 @@ STOP_FILE = _env_str("STOP_FILE", "STOP")
 HF_REPO_TYPE = _env_str("HF_REPO_TYPE", "dataset").strip().lower()
 HF_SQUASH_EVERY = _env_int("HF_SQUASH_EVERY", 0)
 HF_USE_LOCKS = _env_flag("HF_USE_LOCKS", True)
+HF_LOCK_BACKEND = _env_str("HF_LOCK_BACKEND", "hf").strip().lower() or "hf"
 HF_LOCKS_DIR = _env_str("HF_LOCKS_DIR", "locks").strip().strip("/")
 HF_DONE_DIR = _env_str("HF_DONE_DIR", "done").strip().strip("/")
 HF_LOCK_STALE_SECS = float(os.getenv("HF_LOCK_STALE_SECS", "21600"))
@@ -716,6 +718,9 @@ def run_pipeline():
 
     if (not str(UNSPLASH_ACCESS_KEY or "").strip()) and (not unsplash_key_pool):
         raise RuntimeError("UNSPLASH_ACCESS_KEY 为空，且未能从 UNSPLASH_ACCESS_KEY.json 加载")
+
+    if bool(REQUIRE_HF_UPLOAD) and (not bool(HF_UPLOAD)):
+        raise RuntimeError("REQUIRE_HF_UPLOAD=1 但 HF_UPLOAD=0（没有上传 HF 仓库就等于白跑）")
     os.makedirs(SAVE_DIR, exist_ok=True)
     os.makedirs(INPUT_IMAGES_DIR, exist_ok=True)
     os.makedirs(GAUSSIANS_DIR, exist_ok=True)
@@ -786,7 +791,20 @@ def run_pipeline():
 
     coord = None
     if (not SKIP_PREDICT) and HF_UPLOAD and HF_USE_LOCKS and HF_REPO_ID:
-        coord = hf_sync.LockDoneSync(HF_REPO_ID)
+        backend = str(HF_LOCK_BACKEND or "hf").strip().lower() or "hf"
+        if backend in ("none", "disabled", "off"):
+            coord = None
+        elif backend in ("local", "fs", "file"):
+            coord = hf_sync.LocalLockDoneSync(SAVE_DIR, lock_stale_secs=float(HF_LOCK_STALE_SECS))
+        elif backend in ("auto",):
+            coord = hf_sync.AdaptiveLockDoneSync(
+                SAVE_DIR,
+                repo_id=str(HF_REPO_ID),
+                lock_stale_secs=float(HF_LOCK_STALE_SECS),
+                check_interval_s=float(os.getenv("HF_LOCK_AUTO_CHECK_SECS", "300") or "300"),
+            )
+        else:
+            coord = hf_sync.LockDoneSync(HF_REPO_ID)
 
     range_coord = None
     # 小贡献者保护：MAX_IMAGES 太小就不启用 range-lock，避免锁住大区间。

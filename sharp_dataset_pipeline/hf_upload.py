@@ -11,6 +11,61 @@ from . import spz_export
 
 _commit_lock = threading.Lock()
 
+_rl_lock = threading.Lock()
+_rl_recommended_batch_size = 1
+_rl_last_ts = None
+
+
+def note_hf_rate_limit() -> None:
+    global _rl_recommended_batch_size, _rl_last_ts
+    try:
+        now = float(time.time())
+    except Exception:
+        now = None
+    try:
+        with _rl_lock:
+            if now is not None:
+                _rl_last_ts = float(now)
+            cur = int(_rl_recommended_batch_size or 1)
+            if cur < 2:
+                cur = 2
+            else:
+                cur = min(64, int(cur) * 2)
+            _rl_recommended_batch_size = int(cur)
+    except Exception:
+        return
+
+
+def recommended_hf_upload_batch_size(default_size: int) -> int:
+    try:
+        base = max(1, min(int(default_size), 64))
+    except Exception:
+        base = 1
+
+    try:
+        with _rl_lock:
+            rec = int(_rl_recommended_batch_size or 1)
+            last = _rl_last_ts
+    except Exception:
+        rec = 1
+        last = None
+
+    try:
+        if last is not None and rec > 1:
+            age = float(time.time()) - float(last)
+            if age >= 1800.0:
+                with _rl_lock:
+                    if _rl_last_ts == last and int(_rl_recommended_batch_size or 1) == rec:
+                        _rl_recommended_batch_size = max(1, int(rec) // 2)
+                        rec = int(_rl_recommended_batch_size or 1)
+    except Exception:
+        pass
+
+    try:
+        return max(base, max(1, min(int(rec), 64)))
+    except Exception:
+        return base
+
 
 def _is_precondition_failed(err: Exception) -> bool:
     try:
@@ -22,9 +77,40 @@ def _is_precondition_failed(err: Exception) -> bool:
         return False
 
 
+def _hf_rate_limit_wait_s(err: Exception) -> float | None:
+    try:
+        s = str(err)
+    except Exception:
+        s = ""
+
+    if not s:
+        return None
+
+    s2 = s.lower()
+    if "429" not in s2 and "too many requests" not in s2:
+        return None
+
+    # Commit/hour limit (most important to respect)
+    if "repository commits" in s2 or "commits (" in s2 or "128 per hour" in s2:
+        return 3600.0
+
+    # Generic retry-after hint in exception string
+    try:
+        import re
+
+        m = re.search(r"retry after\s+(\d+)\s+seconds", s2)
+        if m:
+            return float(int(m.group(1)))
+    except Exception:
+        pass
+
+    return None
+
+
 def _create_commit_retry(api, *, repo_id: str, repo_type: str, operations, commit_message: str, debug_fn):
     last_err = None
-    for attempt in range(0, 6):
+    attempt = 0
+    while attempt < 6:
         try:
             with _commit_lock:
                 api.create_commit(
@@ -38,6 +124,25 @@ def _create_commit_retry(api, *, repo_id: str, repo_type: str, operations, commi
             last_err = e
             if hf_utils.should_retry_with_pr(e):
                 raise
+
+            wait_rl = _hf_rate_limit_wait_s(e)
+            if wait_rl is not None:
+                try:
+                    note_hf_rate_limit()
+                except Exception:
+                    pass
+                # Do not consume an attempt budget for 429; just wait and retry.
+                try:
+                    wait_s = max(1.0, float(wait_rl))
+                    # jitter to avoid multi-client thundering herds
+                    wait_s = float(wait_s) * (0.8 + 0.4 * random.random())
+                    if debug_fn:
+                        debug_fn(f"HF 上传失败（可重试，429 限速） | wait={wait_s:.1f}s")
+                    time.sleep(wait_s)
+                except Exception:
+                    time.sleep(5.0)
+                continue
+
             if not _is_precondition_failed(e):
                 raise
             if attempt >= 5:
@@ -50,6 +155,7 @@ def _create_commit_retry(api, *, repo_id: str, repo_type: str, operations, commi
                 time.sleep(wait_s)
             except Exception:
                 time.sleep(0.5)
+            attempt += 1
     if last_err is not None:
         raise last_err
 

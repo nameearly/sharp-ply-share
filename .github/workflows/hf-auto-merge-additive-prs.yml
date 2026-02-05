@@ -3,7 +3,11 @@ name: HF Auto-Merge Additive PRs
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/15 * * * *"  # every 15 minutes
+    - cron: "*/10 * * * *"  # self-adapt level=1
+
+concurrency:
+  group: hf-auto-merge-additive-prs-cron
+  cancel-in-progress: false
 
 jobs:
   auto_merge:
@@ -14,6 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -26,6 +31,7 @@ jobs:
           python -m pip install "huggingface_hub>=0.24.0"
 
       - name: Auto-merge additive HF PRs
+        id: merge
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HUGGINGFACE_HUB_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -103,44 +109,130 @@ jobs:
 
               api = HfApi(token=token)
 
-              merged = 0
-              skipped = 0
-              errors = 0
+              def run_once() -> tuple[int, int, int, int]:
+                  merged = 0
+                  skipped = 0
+                  errors = 0
+                  for d in api.get_repo_discussions(
+                      repo_id=repo_id,
+                      repo_type=repo_type,
+                      discussion_type="pull_request",
+                      discussion_status="open",
+                  ):
+                      try:
+                          num = int(getattr(d, "num"))
+                          title = str(getattr(d, "title", ""))
+                          details = api.get_discussion_details(repo_id=repo_id, repo_type=repo_type, discussion_num=num)
 
-              for d in api.get_repo_discussions(
-                  repo_id=repo_id,
-                  repo_type=repo_type,
-                  discussion_type="pull_request",
-                  discussion_status="open",
-              ):
-                  try:
-                      num = int(getattr(d, "num"))
-                      title = str(getattr(d, "title", ""))
-                      details = api.get_discussion_details(repo_id=repo_id, repo_type=repo_type, discussion_num=num)
+                          # Skip conflicts.
+                          conflicting = getattr(details, "conflicting_files", None)
+                          if conflicting:
+                              skipped += 1
+                              print(f"SKIP PR#{num} (conflicts): {title} | conflicting_files={len(conflicting)}")
+                              continue
 
-                      # Skip conflicts.
-                      conflicting = getattr(details, "conflicting_files", None)
-                      if conflicting:
-                          skipped += 1
-                          print(f"SKIP PR#{num} (conflicts): {title} | conflicting_files={len(conflicting)}")
-                          continue
+                          diff = str(getattr(details, "diff", "") or "")
+                          if not _is_additive_only_diff(diff):
+                              skipped += 1
+                              print(f"SKIP PR#{num} (non-additive): {title}")
+                              continue
 
-                      diff = str(getattr(details, "diff", "") or "")
-                      if not _is_additive_only_diff(diff):
-                          skipped += 1
-                          print(f"SKIP PR#{num} (non-additive): {title}")
-                          continue
+                          api.merge_pull_request(repo_id=repo_id, repo_type=repo_type, discussion_num=num)
+                          merged += 1
+                          print(f"MERGED PR#{num}: {title}")
+                      except Exception as e:
+                          errors += 1
+                          print(f"ERROR processing PR: {e}")
+                  print(f"Done | merged={merged} skipped={skipped} errors={errors}")
+                  return (0 if errors == 0 else 1, merged, skipped, errors)
 
-                      api.merge_pull_request(repo_id=repo_id, repo_type=repo_type, discussion_num=num)
-                      merged += 1
-                      print(f"MERGED PR#{num}: {title}")
-                  except Exception as e:
-                      errors += 1
-                      print(f"ERROR processing PR: {e}")
+              rc, merged, skipped, errors = run_once()
 
-              print(f"Done | merged={merged} skipped={skipped} errors={errors}")
-              return 0 if errors == 0 else 1
+              did_work = "1" if int(merged) > 0 else "0"
+              gh_out = os.getenv("GITHUB_OUTPUT")
+              if gh_out:
+                  with open(gh_out, "a", encoding="utf-8") as f:
+                      f.write(f"did_work={did_work}\n")
+
+              return int(rc)
 
 
           raise SystemExit(main())
+          PY
+
+      - name: Self-adjust schedule cron
+        if: always()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          DID_WORK: ${{ steps.merge.outputs.did_work }}
+        run: |
+          python - << 'PY'
+          import os
+          import re
+          import subprocess
+
+          pat = (os.getenv("GH_PAT") or "").strip()
+          if not pat:
+              print("GH_PAT not set; skipping cron self-adjust.")
+              raise SystemExit(0)
+
+          did_work = str(os.getenv("DID_WORK") or "0").strip()
+          repo = str(os.getenv("GITHUB_REPOSITORY") or "").strip()
+          ref_name = str(os.getenv("GITHUB_REF_NAME") or "main").strip() or "main"
+          if not repo:
+              print("Missing GITHUB_REPOSITORY; skipping.")
+              raise SystemExit(0)
+
+          path = ".github/workflows/hf-auto-merge-additive-prs.yml"
+          with open(path, "r", encoding="utf-8") as f:
+              txt = f.read()
+
+          minutes = [5, 10, 20, 30, 60]
+          max_level = len(minutes) - 1
+
+          m = re.search(r"^\s*-\s*cron:\s*\"([^\"]+)\"\s*#\s*self-adapt\s+level=(\d+)\s*$", txt, flags=re.MULTILINE)
+          if not m:
+              print("Could not find self-adapt cron line; skipping.")
+              raise SystemExit(0)
+
+          old_level = int(m.group(2))
+          old_level = max(0, min(max_level, old_level))
+
+          if did_work == "1":
+              new_level = 0
+          else:
+              new_level = min(max_level, old_level + 1)
+
+          def level_to_cron(lv: int) -> str:
+              mm = int(minutes[lv])
+              if mm >= 60:
+                  return "0 * * * *"
+              return f"*/{mm} * * * *"
+
+          new_cron = level_to_cron(new_level)
+          old_line = m.group(0)
+          indent = re.match(r"^(\s*)-\s*cron:", old_line).group(1)
+          new_line = f"{indent}- cron: \"{new_cron}\"  # self-adapt level={new_level}"
+          if old_line.strip() == new_line.strip():
+              print("Cron unchanged; no commit.")
+              raise SystemExit(0)
+
+          txt2 = txt.replace(old_line, new_line, 1)
+          with open(path, "w", encoding="utf-8") as f:
+              f.write(txt2)
+
+          subprocess.check_call(["git", "config", "user.name", "gha-cron-bot"])
+          subprocess.check_call(["git", "config", "user.email", "gha-cron-bot@users.noreply.github.com"])
+          subprocess.check_call(["git", "add", path])
+
+          st = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=False)
+          if not (st.stdout or "").strip():
+              print("No changes staged; skipping.")
+              raise SystemExit(0)
+
+          subprocess.check_call(["git", "commit", "-m", f"chore(gha): self-adjust auto-merge cron -> level {new_level}"])
+          remote = f"https://x-access-token:{pat}@github.com/{repo}.git"
+          subprocess.check_call(["git", "remote", "set-url", "origin", remote])
+          subprocess.check_call(["git", "push", "origin", f"HEAD:{ref_name}"])
+          print(f"Updated cron to: {new_cron} (level={new_level})")
           PY

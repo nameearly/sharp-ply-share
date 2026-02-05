@@ -2,6 +2,7 @@ import io
 import os
 import re
 import json
+import sqlite3
 import threading
 import time
 import uuid
@@ -556,6 +557,473 @@ class LockDoneSync:
                     self.done = set()
                 self.done.add(image_id)
         return bool(ok)
+
+
+class LocalLockDoneSync:
+    def __init__(self, save_dir: str, *, lock_stale_secs: float = 21600.0):
+        self.save_dir = os.path.abspath(str(save_dir or os.getcwd()))
+        self.lock_stale_secs = float(lock_stale_secs)
+        self.instance_id = uuid.uuid4().hex
+        self.lock = threading.Lock()
+        self._recent = {}
+
+        self.db_path = os.path.join(self.save_dir, "local_lock_done.sqlite3")
+        self._conn = None
+        try:
+            os.makedirs(self.save_dir, exist_ok=True)
+        except Exception:
+            pass
+        self._ensure_db()
+
+    def _ensure_db(self) -> None:
+        with self.lock:
+            if self._conn is None:
+                self._conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+                try:
+                    self._conn.execute("PRAGMA journal_mode=WAL")
+                except Exception:
+                    pass
+                try:
+                    self._conn.execute("PRAGMA synchronous=NORMAL")
+                except Exception:
+                    pass
+            c = self._conn
+            c.execute(
+                "CREATE TABLE IF NOT EXISTS done (id TEXT PRIMARY KEY, ts REAL)"
+            )
+            c.execute(
+                "CREATE TABLE IF NOT EXISTS locks (id TEXT PRIMARY KEY, ts REAL, owner TEXT, extra TEXT)"
+            )
+            c.commit()
+
+    def _q1(self, sql: str, args: tuple):
+        self._ensure_db()
+        with self.lock:
+            cur = self._conn.execute(sql, args)
+            return cur.fetchone()
+
+    def _exec(self, sql: str, args: tuple = ()) -> None:
+        self._ensure_db()
+        with self.lock:
+            self._conn.execute(sql, args)
+            self._conn.commit()
+
+    def iter_done_ids(self):
+        self._ensure_db()
+        with self.lock:
+            cur = self._conn.execute("SELECT id FROM done")
+        while True:
+            with self.lock:
+                rows = cur.fetchmany(1024)
+            if not rows:
+                break
+            for (rid,) in rows:
+                if rid:
+                    yield str(rid)
+
+    def iter_locks(self):
+        self._ensure_db()
+        with self.lock:
+            cur = self._conn.execute("SELECT id, ts, owner, extra FROM locks")
+        while True:
+            with self.lock:
+                rows = cur.fetchmany(1024)
+            if not rows:
+                break
+            for rid, ts, owner, extra in rows:
+                if rid:
+                    yield {
+                        "id": str(rid),
+                        "ts": float(ts) if ts is not None else None,
+                        "owner": str(owner) if owner is not None else "",
+                        "extra": str(extra) if extra is not None else "",
+                    }
+
+    def is_done(self, image_id: str) -> bool:
+        if not image_id:
+            return False
+        try:
+            row = self._q1("SELECT 1 FROM done WHERE id=?", (str(image_id),))
+            return row is not None
+        except Exception:
+            return False
+
+    def try_lock_status(self, image_id: str, extra: str | None = None):
+        if not image_id:
+            return ("error", None)
+        if self.is_done(image_id):
+            return ("done", None)
+
+        try:
+            now = time.time()
+            with self.lock:
+                rec = self._recent.get(str(image_id))
+            if rec is not None:
+                st, until = rec
+                if (until is not None) and float(until) > float(now):
+                    return (st, float(until))
+        except Exception:
+            pass
+
+        now = time.time()
+
+        try:
+            row = self._q1("SELECT ts, owner FROM locks WHERE id=?", (str(image_id),))
+        except Exception:
+            row = None
+
+        if row is not None:
+            try:
+                tsf = float(row[0]) if row[0] is not None else None
+            except Exception:
+                tsf = None
+            if tsf is not None:
+                age = float(now) - float(tsf)
+                if age < float(self.lock_stale_secs):
+                    ra = float(tsf) + float(self.lock_stale_secs)
+                    try:
+                        with self.lock:
+                            self._recent[str(image_id)] = ("locked_by_other", float(ra))
+                    except Exception:
+                        pass
+                    return ("locked_by_other", float(ra))
+
+            try:
+                self._exec("DELETE FROM locks WHERE id=?", (str(image_id),))
+            except Exception:
+                pass
+
+        try:
+            self._ensure_db()
+            with self.lock:
+                try:
+                    self._conn.execute(
+                        "INSERT INTO locks(id, ts, owner, extra) VALUES(?,?,?,?)",
+                        (str(image_id), float(now), str(self.instance_id), str(extra or "")),
+                    )
+                    self._conn.commit()
+                    ra = float(now) + float(self.lock_stale_secs)
+                    try:
+                        self._recent[str(image_id)] = ("acquired", float(ra))
+                        if len(self._recent) > 200000:
+                            self._recent = {}
+                    except Exception:
+                        pass
+                    return ("acquired", float(ra))
+                except sqlite3.IntegrityError:
+                    pass
+        except Exception:
+            ra = float(now) + 30.0
+            try:
+                with self.lock:
+                    self._recent[str(image_id)] = ("error", float(ra))
+            except Exception:
+                pass
+            return ("error", float(ra))
+
+        try:
+            row2 = self._q1("SELECT ts FROM locks WHERE id=?", (str(image_id),))
+            ts2 = float(row2[0]) if row2 is not None and row2[0] is not None else float(now)
+            ra = float(ts2) + float(self.lock_stale_secs)
+        except Exception:
+            ra = float(now) + 30.0
+
+        try:
+            with self.lock:
+                self._recent[str(image_id)] = ("locked_by_other", float(ra))
+                if len(self._recent) > 200000:
+                    self._recent = {}
+        except Exception:
+            pass
+        return ("locked_by_other", float(ra))
+
+    def try_lock(self, image_id: str, extra: str | None = None) -> bool:
+        st, _ = self.try_lock_status(image_id, extra=extra)
+        return st == "acquired"
+
+    def mark_done(self, image_id: str) -> bool:
+        if not image_id:
+            return False
+        try:
+            now = time.time()
+            self._exec(
+                "INSERT OR REPLACE INTO done(id, ts) VALUES(?,?)",
+                (str(image_id), float(now)),
+            )
+            try:
+                self._exec("DELETE FROM locks WHERE id=?", (str(image_id),))
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
+
+def _hf_is_rate_limited(err: Exception) -> tuple[bool, float | None]:
+    try:
+        s = str(err).lower()
+    except Exception:
+        s = ""
+    if ("429" not in s) and ("too many requests" not in s):
+        return (False, None)
+    if "repository commits" in s or "128 per hour" in s:
+        return (True, 3600.0)
+    try:
+        m = re.search(r"retry after\s+(\d+)\s+seconds", s)
+        if m:
+            return (True, float(int(m.group(1))))
+    except Exception:
+        pass
+    return (True, 30.0)
+
+
+def _hf_create_commit_retry(api, *, repo_id: str, operations, commit_message: str, create_pr: bool = False):
+    last = None
+    attempt = 0
+    while attempt < 6:
+        try:
+            api.create_commit(
+                repo_id=repo_id,
+                repo_type=_HF_REPO_TYPE,
+                operations=operations,
+                commit_message=commit_message,
+                create_pr=bool(create_pr),
+            )
+            return
+        except Exception as e:
+            last = e
+            rl, wait_s = _hf_is_rate_limited(e)
+            if rl:
+                try:
+                    time.sleep(max(1.0, float(wait_s or 30.0)) * (0.8 + 0.4 * (time.time() % 1.0)))
+                except Exception:
+                    time.sleep(5.0)
+                continue
+            if _hf_should_retry_with_pr(e) and (not create_pr):
+                create_pr = True
+                continue
+            if ("412" not in str(e)) and ("Precondition" not in str(e)):
+                raise
+            if attempt >= 5:
+                raise
+            try:
+                time.sleep(min(8.0, float(0.5 * (2**attempt))))
+            except Exception:
+                time.sleep(0.5)
+            attempt += 1
+    if last is not None:
+        raise last
+
+
+class AdaptiveLockDoneSync:
+    def __init__(self, save_dir: str, *, repo_id: str, lock_stale_secs: float = 21600.0, check_interval_s: float = 300.0):
+        self.repo_id = str(repo_id)
+        self.lock_stale_secs = float(lock_stale_secs)
+        self.check_interval_s = float(check_interval_s)
+
+        self._lock = threading.Lock()
+        self._mode = "local"
+        self._last_check_ts = 0.0
+
+        self.local = LocalLockDoneSync(save_dir, lock_stale_secs=float(lock_stale_secs))
+        self.hf = LockDoneSync(self.repo_id)
+
+    def _maybe_promote(self) -> None:
+        with self._lock:
+            if self._mode != "local":
+                return
+            now = time.time()
+            if (now - float(self._last_check_ts)) < float(self.check_interval_s):
+                return
+            self._last_check_ts = float(now)
+
+        try:
+            from huggingface_hub import HfApi
+
+            api = HfApi()
+            any_remote_lock = False
+            try:
+                for _ent in api.list_repo_tree(
+                    repo_id=self.repo_id,
+                    repo_type=_HF_REPO_TYPE,
+                    path_in_repo=str(_HF_LOCKS_DIR).strip().strip('/'),
+                    recursive=False,
+                ):
+                    any_remote_lock = True
+                    break
+            except Exception:
+                any_remote_lock = False
+
+            if not any_remote_lock:
+                # Fallback: if others are pushing via PRs, locks may not be visible in main.
+                try:
+                    for _d in api.get_repo_discussions(
+                        repo_id=self.repo_id,
+                        repo_type=_HF_REPO_TYPE,
+                        discussion_type="pull_request",
+                        discussion_status="open",
+                    ):
+                        any_remote_lock = True
+                        break
+                except Exception:
+                    pass
+
+            if not any_remote_lock:
+                return
+
+            existing_done = set()
+            existing_locks = set()
+            try:
+                base_done = str(_HF_DONE_DIR).strip().strip('/')
+                if base_done:
+                    for ent in api.list_repo_tree(
+                        repo_id=self.repo_id,
+                        repo_type=_HF_REPO_TYPE,
+                        path_in_repo=base_done,
+                        recursive=False,
+                    ):
+                        p = None
+                        for attr in ("path", "path_in_repo", "rfilename"):
+                            if hasattr(ent, attr):
+                                try:
+                                    p = getattr(ent, attr)
+                                    break
+                                except Exception:
+                                    p = None
+                        if p:
+                            name = os.path.basename(str(p))
+                            if name:
+                                existing_done.add(str(name))
+            except Exception:
+                existing_done = set()
+
+            try:
+                base_locks = str(_HF_LOCKS_DIR).strip().strip('/')
+                if base_locks:
+                    for ent in api.list_repo_tree(
+                        repo_id=self.repo_id,
+                        repo_type=_HF_REPO_TYPE,
+                        path_in_repo=base_locks,
+                        recursive=False,
+                    ):
+                        p = None
+                        for attr in ("path", "path_in_repo", "rfilename"):
+                            if hasattr(ent, attr):
+                                try:
+                                    p = getattr(ent, attr)
+                                    break
+                                except Exception:
+                                    p = None
+                        if p:
+                            name = os.path.basename(str(p))
+                            if name:
+                                existing_locks.add(str(name))
+            except Exception:
+                existing_locks = set()
+
+            ops = []
+            try:
+                from huggingface_hub import CommitOperationAdd
+
+                for rid in self.local.iter_done_ids():
+                    if rid in existing_done:
+                        continue
+                    ops.append(CommitOperationAdd(path_in_repo=hf_done_repo_path(str(rid)), path_or_fileobj=io.BytesIO(b"")))
+                    if len(ops) >= 64:
+                        _hf_create_commit_retry(api, repo_id=self.repo_id, operations=list(ops), commit_message="export local done")
+                        for op in ops:
+                            try:
+                                p = str(getattr(op, 'path_in_repo', '') or '')
+                                name = os.path.basename(p)
+                                if name:
+                                    self.hf.done.add(name)
+                            except Exception:
+                                pass
+                        ops = []
+
+                if ops:
+                    _hf_create_commit_retry(api, repo_id=self.repo_id, operations=list(ops), commit_message="export local done")
+                    for op in ops:
+                        try:
+                            p = str(getattr(op, 'path_in_repo', '') or '')
+                            name = os.path.basename(p)
+                            if name:
+                                self.hf.done.add(name)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            ops2 = []
+            try:
+                from huggingface_hub import CommitOperationAdd
+
+                for rec in self.local.iter_locks():
+                    rid = str(rec.get('id') or '')
+                    if not rid:
+                        continue
+                    if rid in existing_locks:
+                        continue
+                    ts = rec.get('ts')
+                    if ts is None:
+                        ts = time.time()
+                    payload = f"{float(ts)}\n{str(rec.get('owner') or '')}\n{str(rec.get('extra') or '')}\n".encode('utf-8')
+                    ops2.append(CommitOperationAdd(path_in_repo=hf_locks_repo_path(rid), path_or_fileobj=io.BytesIO(payload)))
+                    if len(ops2) >= 64:
+                        _hf_create_commit_retry(api, repo_id=self.repo_id, operations=list(ops2), commit_message="export local locks")
+                        ops2 = []
+                if ops2:
+                    _hf_create_commit_retry(api, repo_id=self.repo_id, operations=list(ops2), commit_message="export local locks")
+            except Exception:
+                pass
+
+            with self._lock:
+                self._mode = "hf"
+        except Exception:
+            return
+
+    def is_done(self, image_id: str) -> bool:
+        try:
+            self._maybe_promote()
+        except Exception:
+            pass
+        with self._lock:
+            mode = self._mode
+        if mode == "hf":
+            return self.hf.is_done(image_id)
+        return self.local.is_done(image_id)
+
+    def try_lock_status(self, image_id: str, extra: str | None = None):
+        try:
+            self._maybe_promote()
+        except Exception:
+            pass
+        with self._lock:
+            mode = self._mode
+        if mode == "hf":
+            return self.hf.try_lock_status(image_id, extra=extra)
+        return self.local.try_lock_status(image_id, extra=extra)
+
+    def try_lock(self, image_id: str, extra: str | None = None) -> bool:
+        st, _ = self.try_lock_status(image_id, extra=extra)
+        return st == "acquired"
+
+    def mark_done(self, image_id: str) -> bool:
+        try:
+            self._maybe_promote()
+        except Exception:
+            pass
+        with self._lock:
+            mode = self._mode
+        if mode == "hf":
+            ok = self.hf.mark_done(image_id)
+            if ok:
+                try:
+                    self.local.mark_done(image_id)
+                except Exception:
+                    pass
+            return bool(ok)
+        return self.local.mark_done(image_id)
 
 
 class RangeLockSync:
