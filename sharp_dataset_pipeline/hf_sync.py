@@ -2,6 +2,7 @@ import io
 import os
 import re
 import json
+import socket
 import sqlite3
 import threading
 import time
@@ -12,6 +13,7 @@ _HF_UPLOAD = False
 _HF_REPO_TYPE = "model"
 _HF_LOCKS_DIR = "locks"
 _HF_DONE_DIR = "done"
+_HF_COWORKERS_DIR = "coworkers"
 _RANGE_LOCKS_DIR = "ranges/locks"
 _RANGE_DONE_DIR = "ranges/done"
 _RANGE_PROGRESS_DIR = "ranges/progress"
@@ -52,13 +54,19 @@ def configure_hf_sync(
     range_lock_stale_secs: float,
     debug_fn=None,
 ):
-    global _HF_UPLOAD, _HF_REPO_TYPE, _HF_LOCKS_DIR, _HF_DONE_DIR
+    global _HF_UPLOAD, _HF_REPO_TYPE, _HF_LOCKS_DIR, _HF_DONE_DIR, _HF_COWORKERS_DIR
     global _RANGE_LOCKS_DIR, _RANGE_DONE_DIR, _RANGE_PROGRESS_DIR, _RANGE_ABANDONED_DIR
     global _HF_LOCK_STALE_SECS, _RANGE_LOCK_STALE_SECS, _debug
     _HF_UPLOAD = bool(hf_upload)
     _HF_REPO_TYPE = str(repo_type)
     _HF_LOCKS_DIR = str(hf_locks_dir).strip().strip('/')
     _HF_DONE_DIR = str(hf_done_dir).strip().strip('/')
+    try:
+        v = str(os.getenv("HF_COWORKERS_DIR", "") or "").strip().strip('/')
+        if v:
+            _HF_COWORKERS_DIR = v
+    except Exception:
+        pass
     _RANGE_LOCKS_DIR = str(range_locks_dir).strip().strip('/')
     _RANGE_DONE_DIR = str(range_done_dir).strip().strip('/')
     _RANGE_PROGRESS_DIR = str(range_progress_dir).strip().strip('/')
@@ -277,6 +285,132 @@ def _hf_should_retry_with_pr(err: Exception) -> bool:
         return ("create_pr=1" in s) or ("create_pr" in s and "Pull Request" in s)
     except Exception:
         return False
+
+
+def _hf_coworker_events_prefix() -> str:
+    base = str(_HF_COWORKERS_DIR).strip().strip('/')
+    if base:
+        return f"{base}/events"
+    return "events"
+
+
+def _hf_coworker_active_repo_path() -> str:
+    base = str(_HF_COWORKERS_DIR).strip().strip('/')
+    if base:
+        return f"{base}/active.json"
+    return "active.json"
+
+
+def _coworker_owner_default() -> str:
+    try:
+        v = str(os.getenv("HF_COWORKER_OWNER", "") or "").strip()
+        if v:
+            return v
+    except Exception:
+        pass
+    for k in ("USERNAME", "USER", "LOGNAME"):
+        try:
+            v = str(os.getenv(k, "") or "").strip()
+            if v:
+                return v
+        except Exception:
+            pass
+    try:
+        h = str(socket.gethostname() or "").strip()
+        if h:
+            return h
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _coworker_ttl_s_default() -> float:
+    try:
+        v = float(os.getenv("HF_COWORKER_TTL_SECS", "1800") or "1800")
+        if v > 0:
+            return float(v)
+    except Exception:
+        pass
+    return 1800.0
+
+
+def _coworker_heartbeat_s_default(ttl_s: float) -> float:
+    try:
+        v = float(os.getenv("HF_COWORKER_HEARTBEAT_SECS", "") or "")
+        if v > 0:
+            return float(v)
+    except Exception:
+        pass
+    try:
+        return max(60.0, min(float(ttl_s) * 0.5, 900.0))
+    except Exception:
+        return 900.0
+
+
+def _hf_coworker_event_repo_path(owner: str, session_id: str, ts: float, kind: str) -> str:
+    base = _hf_coworker_events_prefix().strip().strip('/')
+    owner_s = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(owner or "unknown").strip())
+    sess_s = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(session_id or "").strip())
+    if not sess_s:
+        sess_s = uuid.uuid4().hex
+    ts_i = int(float(ts) * 1000.0)
+    kind_s = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(kind or "event").strip())
+    fn = f"{ts_i}_{kind_s}.json"
+    if base:
+        return f"{base}/{owner_s}/{sess_s}/{fn}"
+    return f"{owner_s}/{sess_s}/{fn}"
+
+
+def _hf_try_write_coworker_event_pr(
+    repo_id: str,
+    *,
+    owner: str,
+    session_id: str,
+    kind: str,
+    ts: float | None = None,
+    extra: dict | None = None,
+) -> bool:
+    if (not _HF_UPLOAD) or (not repo_id):
+        return False
+    try:
+        from huggingface_hub import CommitOperationAdd, HfApi
+
+        api = HfApi()
+        now = time.time() if ts is None else float(ts)
+        payload = {
+            "v": 1,
+            "kind": str(kind),
+            "owner": str(owner),
+            "session": str(session_id),
+            "ts": float(now),
+        }
+        try:
+            if isinstance(extra, dict):
+                payload.update(extra)
+        except Exception:
+            pass
+
+        path = _hf_coworker_event_repo_path(str(owner), str(session_id), float(now), str(kind))
+        buf = io.BytesIO(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        ops = [CommitOperationAdd(path_in_repo=path, path_or_fileobj=buf)]
+        _hf_create_commit_retry(
+            api,
+            repo_id=str(repo_id),
+            operations=ops,
+            commit_message=f"coworker {str(kind)} {str(owner)}",
+            create_pr=True,
+        )
+        return True
+    except Exception as e:
+        _d(f"HF coworker event PR failed（可忽略） | kind={str(kind)} owner={str(owner)} | err={type(e).__name__}: {str(e)}")
+        return False
+
+
+def _hf_try_read_coworker_active(repo_id: str):
+    try:
+        return _hf_try_read_json(str(repo_id), _hf_coworker_active_repo_path())
+    except Exception:
+        return None
 
 
 def _hf_try_get_lock_info_status(repo_id: str, image_id: str):
@@ -558,6 +692,12 @@ class LockDoneSync:
                 self.done.add(image_id)
         return bool(ok)
 
+    def start(self) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
 
 class LocalLockDoneSync:
     def __init__(self, save_dir: str, *, lock_stale_secs: float = 21600.0):
@@ -647,6 +787,12 @@ class LocalLockDoneSync:
             return row is not None
         except Exception:
             return False
+
+    def start(self) -> None:
+        return
+
+    def close(self) -> None:
+        return
 
     def try_lock_status(self, image_id: str, extra: str | None = None):
         if not image_id:
@@ -758,6 +904,12 @@ class LocalLockDoneSync:
         except Exception:
             return False
 
+    def start(self) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
 
 def _hf_is_rate_limited(err: Exception) -> tuple[bool, float | None]:
     try:
@@ -825,8 +977,144 @@ class AdaptiveLockDoneSync:
         self._mode = "local"
         self._last_check_ts = 0.0
 
+        self.owner = _coworker_owner_default()
+        self.session_id = uuid.uuid4().hex
+        self.coworker_ttl_s = float(_coworker_ttl_s_default())
+        self.coworker_heartbeat_s = float(_coworker_heartbeat_s_default(float(self.coworker_ttl_s)))
+        self._presence_started = False
+        self._last_presence_ts = 0.0
+        self._presence_closed = False
+
         self.local = LocalLockDoneSync(save_dir, lock_stale_secs=float(lock_stale_secs))
         self.hf = LockDoneSync(self.repo_id)
+
+    def start(self) -> None:
+        try:
+            with self._lock:
+                if self._presence_started:
+                    return
+                self._presence_started = True
+        except Exception:
+            pass
+        try:
+            _hf_try_write_coworker_event_pr(
+                self.repo_id,
+                owner=str(self.owner),
+                session_id=str(self.session_id),
+                kind="start",
+                extra={"ttl_s": float(self.coworker_ttl_s)},
+            )
+        except Exception:
+            pass
+        try:
+            self._last_presence_ts = float(time.time())
+        except Exception:
+            self._last_presence_ts = 0.0
+
+    def close(self) -> None:
+        try:
+            with self._lock:
+                if self._presence_closed:
+                    return
+                self._presence_closed = True
+        except Exception:
+            pass
+        try:
+            _hf_try_write_coworker_event_pr(
+                self.repo_id,
+                owner=str(self.owner),
+                session_id=str(self.session_id),
+                kind="end",
+                extra={"ttl_s": float(self.coworker_ttl_s)},
+            )
+        except Exception:
+            pass
+
+    def _maybe_presence_heartbeat(self) -> None:
+        try:
+            now = float(time.time())
+        except Exception:
+            return
+        try:
+            if (not self._presence_started) or self._presence_closed:
+                return
+        except Exception:
+            pass
+        try:
+            if float(self.coworker_heartbeat_s) <= 0:
+                return
+        except Exception:
+            return
+        try:
+            if (now - float(self._last_presence_ts)) < float(self.coworker_heartbeat_s):
+                return
+        except Exception:
+            pass
+        try:
+            _hf_try_write_coworker_event_pr(
+                self.repo_id,
+                owner=str(self.owner),
+                session_id=str(self.session_id),
+                kind="heartbeat",
+                extra={"ttl_s": float(self.coworker_ttl_s)},
+            )
+        except Exception:
+            pass
+        try:
+            self._last_presence_ts = float(now)
+        except Exception:
+            pass
+
+    def _other_active_coworkers_exist(self) -> bool:
+        try:
+            obj = _hf_try_read_coworker_active(self.repo_id)
+        except Exception:
+            obj = None
+        if not isinstance(obj, dict):
+            return False
+        try:
+            arr = obj.get("active")
+            if arr is None:
+                arr = obj.get("coworkers")
+        except Exception:
+            arr = None
+        if not isinstance(arr, list):
+            return False
+        try:
+            now = float(time.time())
+        except Exception:
+            now = None
+        for rec in arr:
+            if not isinstance(rec, dict):
+                continue
+            try:
+                o = str(rec.get("owner") or rec.get("id") or "").strip()
+            except Exception:
+                o = ""
+            if not o:
+                continue
+            if o == str(self.owner):
+                continue
+            exp = None
+            try:
+                exp = rec.get("expires_ts")
+            except Exception:
+                exp = None
+            if exp is None:
+                try:
+                    last_ts = rec.get("last_ts")
+                    if last_ts is not None:
+                        exp = float(last_ts) + float(self.coworker_ttl_s)
+                except Exception:
+                    exp = None
+            if exp is not None and now is not None:
+                try:
+                    if float(exp) < float(now):
+                        continue
+                except Exception:
+                    pass
+            return True
+        return False
 
     def _maybe_promote(self) -> None:
         with self._lock:
@@ -838,38 +1126,21 @@ class AdaptiveLockDoneSync:
             self._last_check_ts = float(now)
 
         try:
+            try:
+                self._maybe_presence_heartbeat()
+            except Exception:
+                pass
+            if not self._other_active_coworkers_exist():
+                return
+
+            try:
+                _d(f"AdaptiveLockDoneSync promote local -> hf | reason=coworkers_active | owner={str(self.owner)}")
+            except Exception:
+                pass
+
             from huggingface_hub import HfApi
 
             api = HfApi()
-            any_remote_lock = False
-            try:
-                for _ent in api.list_repo_tree(
-                    repo_id=self.repo_id,
-                    repo_type=_HF_REPO_TYPE,
-                    path_in_repo=str(_HF_LOCKS_DIR).strip().strip('/'),
-                    recursive=False,
-                ):
-                    any_remote_lock = True
-                    break
-            except Exception:
-                any_remote_lock = False
-
-            if not any_remote_lock:
-                # Fallback: if others are pushing via PRs, locks may not be visible in main.
-                try:
-                    for _d in api.get_repo_discussions(
-                        repo_id=self.repo_id,
-                        repo_type=_HF_REPO_TYPE,
-                        discussion_type="pull_request",
-                        discussion_status="open",
-                    ):
-                        any_remote_lock = True
-                        break
-                except Exception:
-                    pass
-
-            if not any_remote_lock:
-                return
 
             existing_done = set()
             existing_locks = set()

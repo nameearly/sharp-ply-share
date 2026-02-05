@@ -177,7 +177,7 @@ STOP_FILE = _env_str("STOP_FILE", "STOP")
 HF_REPO_TYPE = _env_str("HF_REPO_TYPE", "dataset").strip().lower()
 HF_SQUASH_EVERY = _env_int("HF_SQUASH_EVERY", 0)
 HF_USE_LOCKS = _env_flag("HF_USE_LOCKS", True)
-HF_LOCK_BACKEND = _env_str("HF_LOCK_BACKEND", "hf").strip().lower() or "hf"
+HF_LOCK_BACKEND = _env_str("HF_LOCK_BACKEND", "auto").strip().lower() or "hf"
 HF_LOCKS_DIR = _env_str("HF_LOCKS_DIR", "locks").strip().strip("/")
 HF_DONE_DIR = _env_str("HF_DONE_DIR", "done").strip().strip("/")
 HF_LOCK_STALE_SECS = float(os.getenv("HF_LOCK_STALE_SECS", "21600"))
@@ -806,128 +806,135 @@ def run_pipeline():
         else:
             coord = hf_sync.LockDoneSync(HF_REPO_ID)
 
-    range_coord = None
-    # 小贡献者保护：MAX_IMAGES 太小就不启用 range-lock，避免锁住大区间。
-    if (
-        HF_UPLOAD
-        and HF_REPO_ID
-        and SOURCE == "list"
-        and bool(RANGE_LOCKS_ENABLED)
-        and (int(max_images_eff) < 0 or int(max_images_eff) >= int(RANGE_LOCK_MIN_IMAGES))
-    ):
-        try:
-            range_coord = hf_sync.RangeLockSync(HF_REPO_ID)
-            try:
-                if float(RANGE_HEARTBEAT_SECS) > 0:
-                    range_coord.heartbeat_secs = float(RANGE_HEARTBEAT_SECS)
-            except Exception:
-                pass
-            try:
-                if float(RANGE_PROGRESS_SECS) > 0:
-                    range_coord.progress_secs = float(RANGE_PROGRESS_SECS)
-            except Exception:
-                pass
-            try:
-                if float(RANGE_ABANDONED_SECS) > 0:
-                    range_coord.abandoned_secs = float(RANGE_ABANDONED_SECS)
-            except Exception:
-                pass
-        except Exception:
-            range_coord = None
-
     try:
-        os.environ.setdefault("HF_INDEX_COMPACT", "1")
-        os.environ.setdefault("HF_INDEX_COMPACT_DROP_EMPTY", "1")
-        os.environ.setdefault("HF_INDEX_TEXT_MODE", "full")
-        os.environ.setdefault("HF_INDEX_ASSET_MODE", "none")
-        os.environ.setdefault("HF_INDEX_DROP_DERIVABLE_URLS", "1")
-        os.environ.setdefault("HF_INDEX_DROP_USER_NAME", "1")
-        os.environ.setdefault("HF_INDEX_DROP_UNSPLASH_ID", "1")
-    except Exception:
-        pass
-
-    index_sync_obj = None
-    if HF_UPLOAD and HF_WRITE_INDEX and HF_REPO_ID and HF_INDEX_REPO_PATH:
         try:
-            index_sync_obj = hf_index_sync.IndexSync(
-                HF_REPO_ID,
-                repo_type=HF_REPO_TYPE,
-                repo_path=HF_INDEX_REPO_PATH,
-                save_dir=SAVE_DIR,
-                hf_upload=HF_UPLOAD,
-                hf_index_flush_every=HF_INDEX_FLUSH_EVERY,
-                hf_index_flush_secs=HF_INDEX_FLUSH_SECS,
-                hf_index_refresh_secs=HF_INDEX_REFRESH_SECS,
-                debug_fn=print_debug,
-            )
+            if coord is not None:
+                coord.start()
         except Exception:
-            index_sync_obj = None
+            pass
 
-    remote_done_fn = None
-    try:
-        backend = str(os.getenv("HF_DONE_BACKEND", "index") or "").strip().lower()
-    except Exception:
-        backend = "index"
-
-    if backend in ("none", "disabled"):
-        remote_done_fn = None
-    elif backend in ("index", "jsonl"):
-        try:
-            if index_sync_obj is not None:
-                def _remote_done_index(pid):
-                    try:
-                        index_sync_obj.maybe_refresh(False)
-                    except Exception:
-                        pass
-                    return str(pid) in (index_sync_obj.indexed or set())
-
-                remote_done_fn = _remote_done_index
-        except Exception:
-            remote_done_fn = None
-    elif backend in ("parquet", "viewer"):
-        try:
-            ds = str(os.getenv("HF_DONE_DATASET", HF_REPO_ID) or "").strip()
-            tok = str(os.getenv("HF_TOKEN", "") or "").strip() or None
-            cfg_name = str(os.getenv("HF_DONE_CONFIG", "") or "").strip()
-            split_name = str(os.getenv("HF_DONE_SPLIT", "") or "").strip()
-            col = str(os.getenv("HF_DONE_COLUMN", "image_id") or "image_id").strip() or "image_id"
-            if (not cfg_name) or (not split_name):
-                sp = parquet_tools.viewer_splits(dataset=ds, token=tok)
+        range_coord = None
+        # 小贡献者保护：MAX_IMAGES 太小就不启用 range-lock，避免锁住大区间。
+        if (
+            HF_UPLOAD
+            and HF_REPO_ID
+            and SOURCE == "list"
+            and bool(RANGE_LOCKS_ENABLED)
+            and (int(max_images_eff) < 0 or int(max_images_eff) >= int(RANGE_LOCK_MIN_IMAGES))
+        ):
+            try:
+                range_coord = hf_sync.RangeLockSync(HF_REPO_ID)
                 try:
-                    first = ((sp.get("splits") or [])[0]) if isinstance(sp, dict) else None
-                    cfg_name = cfg_name or str((first or {}).get("config") or "").strip()
-                    split_name = split_name or str((first or {}).get("split") or "").strip()
+                    if float(RANGE_HEARTBEAT_SECS) > 0:
+                        range_coord.heartbeat_secs = float(RANGE_HEARTBEAT_SECS)
                 except Exception:
                     pass
-            if ds and cfg_name and split_name:
-                remote_done_fn = lambda pid: parquet_tools.viewer_filter_contains(
-                    dataset=ds,
-                    config=cfg_name,
-                    split=split_name,
-                    column=col,
-                    value=str(pid),
-                    token=tok,
-                )
-        except Exception:
-            remote_done_fn = None
-    elif backend in ("duckdb",):
+                try:
+                    if float(RANGE_PROGRESS_SECS) > 0:
+                        range_coord.progress_secs = float(RANGE_PROGRESS_SECS)
+                except Exception:
+                    pass
+                try:
+                    if float(RANGE_ABANDONED_SECS) > 0:
+                        range_coord.abandoned_secs = float(RANGE_ABANDONED_SECS)
+                except Exception:
+                    pass
+            except Exception:
+                range_coord = None
+
         try:
-            ds = str(os.getenv("HF_DONE_DATASET", HF_REPO_ID) or "").strip()
-            tok = str(os.getenv("HF_TOKEN", "") or "").strip() or None
-            cfg_name = str(os.getenv("HF_DONE_CONFIG", "") or "").strip() or None
-            split_name = str(os.getenv("HF_DONE_SPLIT", "") or "").strip() or None
-            col = str(os.getenv("HF_DONE_COLUMN", "image_id") or "image_id").strip() or "image_id"
-            if ds:
-                remote_done_fn = lambda pid: parquet_tools.duckdb_contains(
-                    dataset=ds,
-                    config=cfg_name,
-                    split=split_name,
-                    column=col,
-                    value=str(pid),
-                    token=tok,
-                )
+            os.environ.setdefault("HF_INDEX_COMPACT", "1")
+            os.environ.setdefault("HF_INDEX_COMPACT_DROP_EMPTY", "1")
+            os.environ.setdefault("HF_INDEX_TEXT_MODE", "full")
+            os.environ.setdefault("HF_INDEX_ASSET_MODE", "none")
+            os.environ.setdefault("HF_INDEX_DROP_DERIVABLE_URLS", "1")
+            os.environ.setdefault("HF_INDEX_DROP_USER_NAME", "1")
+            os.environ.setdefault("HF_INDEX_DROP_UNSPLASH_ID", "1")
         except Exception:
+            pass
+
+        index_sync_obj = None
+        if HF_UPLOAD and HF_WRITE_INDEX and HF_REPO_ID and HF_INDEX_REPO_PATH:
+            try:
+                index_sync_obj = hf_index_sync.IndexSync(
+                    HF_REPO_ID,
+                    repo_type=HF_REPO_TYPE,
+                    repo_path=HF_INDEX_REPO_PATH,
+                    save_dir=SAVE_DIR,
+                    hf_upload=HF_UPLOAD,
+                    hf_index_flush_every=HF_INDEX_FLUSH_EVERY,
+                    hf_index_flush_secs=HF_INDEX_FLUSH_SECS,
+                    hf_index_refresh_secs=HF_INDEX_REFRESH_SECS,
+                    debug_fn=print_debug,
+                )
+            except Exception:
+                index_sync_obj = None
+
+        remote_done_fn = None
+        try:
+            backend = str(os.getenv("HF_DONE_BACKEND", "index") or "").strip().lower()
+        except Exception:
+            backend = "index"
+
+        if backend in ("none", "disabled"):
             remote_done_fn = None
+        elif backend in ("index", "jsonl"):
+            try:
+                if index_sync_obj is not None:
+                    def _remote_done_index(pid):
+                        try:
+                            index_sync_obj.maybe_refresh(False)
+                        except Exception:
+                            pass
+                        return str(pid) in (index_sync_obj.indexed or set())
+
+                    remote_done_fn = _remote_done_index
+            except Exception:
+                remote_done_fn = None
+        elif backend in ("parquet", "viewer"):
+            try:
+                ds = str(os.getenv("HF_DONE_DATASET", HF_REPO_ID) or "").strip()
+                tok = str(os.getenv("HF_TOKEN", "") or "").strip() or None
+                cfg_name = str(os.getenv("HF_DONE_CONFIG", "") or "").strip()
+                split_name = str(os.getenv("HF_DONE_SPLIT", "") or "").strip()
+                col = str(os.getenv("HF_DONE_COLUMN", "image_id") or "image_id").strip() or "image_id"
+                if (not cfg_name) or (not split_name):
+                    sp = parquet_tools.viewer_splits(dataset=ds, token=tok)
+                    try:
+                        first = ((sp.get("splits") or [])[0]) if isinstance(sp, dict) else None
+                        cfg_name = cfg_name or str((first or {}).get("config") or "").strip()
+                        split_name = split_name or str((first or {}).get("split") or "").strip()
+                    except Exception:
+                        pass
+                if ds and cfg_name and split_name:
+                    remote_done_fn = lambda pid: parquet_tools.viewer_filter_contains(
+                        dataset=ds,
+                        config=cfg_name,
+                        split=split_name,
+                        column=col,
+                        value=str(pid),
+                        token=tok,
+                    )
+            except Exception:
+                remote_done_fn = None
+        elif backend in ("duckdb",):
+            try:
+                ds = str(os.getenv("HF_DONE_DATASET", HF_REPO_ID) or "").strip()
+                tok = str(os.getenv("HF_TOKEN", "") or "").strip() or None
+                cfg_name = str(os.getenv("HF_DONE_CONFIG", "") or "").strip() or None
+                split_name = str(os.getenv("HF_DONE_SPLIT", "") or "").strip() or None
+                col = str(os.getenv("HF_DONE_COLUMN", "image_id") or "image_id").strip() or "image_id"
+                if ds:
+                    remote_done_fn = lambda pid: parquet_tools.duckdb_contains(
+                        dataset=ds,
+                        config=cfg_name,
+                        split=split_name,
+                        column=col,
+                        value=str(pid),
+                        token=tok,
+                    )
+            except Exception:
+                remote_done_fn = None
 
     def _upload_sample_pair(repo_id: str, image_id: str, image_path: str, ply_path: str):
         return hf_upload.upload_sample_pair(
@@ -1043,6 +1050,12 @@ def run_pipeline():
         inject_focal_exif_if_missing_fn=inject_focal_exif_if_missing,
         debug_fn=print_debug,
     )
+    finally:
+        try:
+            if coord is not None:
+                coord.close()
+        except Exception:
+            pass
 
 
 
