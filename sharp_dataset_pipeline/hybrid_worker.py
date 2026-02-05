@@ -7,118 +7,26 @@ import time
 from datetime import datetime
 
 from . import requests_worker
+from . import hf_utils
 
+_env_str = hf_utils.env_str
+_env_int = hf_utils.env_int
+_env_float = hf_utils.env_float
+_env_flag = hf_utils.env_flag
 
-def _env_str(name: str, default: str = "") -> str:
-    v = os.getenv(name)
-    if v is None:
-        return str(default)
-    return str(v)
-
-
-def _env_int(name: str, default: int) -> int:
-    v = os.getenv(name)
-    if v is None:
-        return int(default)
-    try:
-        return int(str(v).strip())
-    except Exception:
-        return int(default)
-
-
-def _env_float(name: str, default: float) -> float:
-    v = os.getenv(name)
-    if v is None:
-        return float(default)
-    try:
-        return float(str(v).strip())
-    except Exception:
-        return float(default)
-
-
-def _env_flag(name: str, default: bool = False) -> bool:
-    v = os.getenv(name)
-    if v is None:
-        return bool(default)
-    return str(v).strip().lower() in ("1", "true", "yes", "y")
+_control_dir = requests_worker._control_dir
+_control_path = requests_worker._control_path
+_pause_file = requests_worker._pause_file
+_stop_file = requests_worker._stop_file
+pause_requested = requests_worker.pause_requested
+stop_requested = requests_worker.stop_requested
+set_pause = requests_worker.set_pause
+touch_stop = requests_worker.touch_stop
 
 
 def _print(msg: str):
     try:
         print(msg, flush=True)
-    except Exception:
-        pass
-
-
-def _control_dir() -> str:
-    try:
-        cd = os.getenv("CONTROL_DIR")
-        if cd is not None and str(cd).strip():
-            return os.path.abspath(str(cd).strip())
-    except Exception:
-        pass
-    try:
-        sd = os.getenv("REQ_SAVE_DIR")
-        if sd is not None and str(sd).strip():
-            return os.path.abspath(str(sd).strip())
-    except Exception:
-        pass
-    return os.path.abspath(os.getcwd())
-
-
-def _control_path(name: str) -> str:
-    return os.path.join(_control_dir(), str(name))
-
-
-def _pause_file() -> str:
-    return str(os.getenv("PAUSE_FILE", "PAUSE") or "PAUSE").strip() or "PAUSE"
-
-
-def _stop_file() -> str:
-    return str(os.getenv("STOP_FILE", "STOP") or "STOP").strip() or "STOP"
-
-
-def pause_requested() -> bool:
-    try:
-        return os.path.exists(_control_path(_pause_file()))
-    except Exception:
-        return False
-
-
-def stop_requested() -> bool:
-    try:
-        return os.path.exists(_control_path(_stop_file()))
-    except Exception:
-        return False
-
-
-def set_pause(paused: bool) -> bool:
-    p = _control_path(_pause_file())
-    try:
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-    except Exception:
-        pass
-    try:
-        if paused:
-            with open(p, "a", encoding="utf-8"):
-                pass
-        else:
-            if os.path.exists(p):
-                os.remove(p)
-        return bool(paused)
-    except Exception:
-        return bool(paused)
-
-
-def touch_stop() -> None:
-    p = _control_path(_stop_file())
-    try:
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-    except Exception:
-        pass
-    try:
-        with open(p, "a", encoding="utf-8"):
-            pass
     except Exception:
         pass
 
@@ -192,13 +100,13 @@ def _run_normal_once(*, max_images_override: int | None = None) -> int:
             normal_max_images = 3
 
     try:
-        normal_max_candidates = (
+        normal_prefetch = (
             _env_int("HYBRID_NORMAL_MAX_CANDIDATES", 0)
             if os.getenv("HYBRID_NORMAL_MAX_CANDIDATES") is not None
-            else _env_int("MAX_CANDIDATES", 50)
+            else _env_int("MAX_CANDIDATES", 8)
         )
     except Exception:
-        normal_max_candidates = 50
+        normal_prefetch = 8
     normal_source = _env_str("HYBRID_NORMAL_SOURCE", "").strip().lower()
 
     run_id = _env_str("RUN_ID", "")
@@ -208,7 +116,7 @@ def _run_normal_once(*, max_images_override: int | None = None) -> int:
     env = dict(os.environ)
     env["RUN_ID"] = run_id
     env["MAX_IMAGES"] = str(int(normal_max_images))
-    env["MAX_CANDIDATES"] = str(int(normal_max_candidates))
+    env["DOWNLOAD_QUEUE_MAX"] = str(max(1, int(normal_prefetch)))
     env["CONTROL_DIR"] = _control_dir()
     if normal_source in ("search", "list"):
         env["SOURCE"] = normal_source
@@ -247,8 +155,6 @@ def run_loop():
             global_limit = None
     total_done = 0
 
-    sigint_window_s = _env_float("SIGINT_WINDOW_S", 2.0)
-    sig_state = {"last": 0.0}
     stop_flag = {"stop": False}
 
     def _request_stop(reason: str):
@@ -261,18 +167,7 @@ def run_loop():
 
     def _sigint_handler(signum, frame):
         try:
-            now = time.time()
-            if pause_requested():
-                set_pause(False)
-                _print(f"HYBRID: resume requested | pause_file={_control_path(_pause_file())}")
-                return
-            prev = float(sig_state.get("last") or 0.0)
-            sig_state["last"] = float(now)
-            if prev > 0.0 and (now - prev) <= float(sigint_window_s):
-                _request_stop("SIGINT_DOUBLE")
-                return
-            set_pause(True)
-            _print(f"HYBRID: pause requested | pause_file={_control_path(_pause_file())}")
+            _request_stop("SIGINT")
         except Exception:
             return
 
@@ -289,8 +184,19 @@ def run_loop():
                 try:
                     if msvcrt.kbhit():
                         ch = msvcrt.getwch()
-                        if ch in ("\x04", "\x1a"):
-                            _request_stop("CTRL_D")
+                        try:
+                            c2 = str(ch or "")
+                        except Exception:
+                            c2 = ""
+                        c2 = c2.lower()
+                        if c2 == "p":
+                            paused = bool(pause_requested())
+                            set_pause((not paused))
+                            _print(
+                                f"HYBRID: {'pause' if (not paused) else 'resume'} requested | pause_file={_control_path(_pause_file())}"
+                            )
+                        elif c2 == "q":
+                            _request_stop("KEY_Q")
                             break
                 except Exception:
                     time.sleep(0.1)

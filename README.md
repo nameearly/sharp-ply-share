@@ -19,7 +19,7 @@ configs:
 
 ## Pipeline coordination / dedup (for multi-client runs)
 
-- Candidate limit: `MAX_CANDIDATES` limits how many photos are considered; `MAX_IMAGES` limits how many are actually downloaded/processed.
+- Prefetch buffer: `MAX_CANDIDATES` controls how many images the downloader will try to keep queued for inference (same as `DOWNLOAD_QUEUE_MAX` unless you override it explicitly). `MAX_IMAGES` limits how many are actually downloaded/processed.
 - Remote done check: `HF_DONE_BACKEND=index` uses the HF index file (`data/train.jsonl`) as a local in-memory done set, and periodically refreshes it for collaborator correctness (`HF_INDEX_REFRESH_SECS`).
 - Range locks (list + oldest): range coordination is stored on HF under `ranges/locks`, `ranges/done`, and `ranges/progress`.
 - Range done prefix: `ranges/progress/done_prefix.json` is used to avoid repo-wide listings of `ranges/done/`.

@@ -1,5 +1,4 @@
-*.json
-scripts/
+test/
 
 # Python
 __pycache__/
@@ -11,7 +10,11 @@ __pycache__/
 venv/
 .env
 .env.*
-hf_update_index.py
+!.env.example
+
+# Secrets (do not commit)
+UNSPLASH_ACCESS_KEY.json
+!UNSPLASH_ACCESS_KEY.json.example
 
 # Node
 node_modules/
@@ -22,6 +25,10 @@ ml-sharp/
 
 # Local runs / outputs (large)
 runs/
+
+# Profiling outputs
+profile.jsonl
+profile.*.jsonl
 
 # Generated 3DGS assets
 *.ply

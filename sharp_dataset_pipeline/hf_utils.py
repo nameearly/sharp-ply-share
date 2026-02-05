@@ -1,6 +1,49 @@
 import os
 
 
+def env_str(name: str, default: str = "") -> str:
+    try:
+        v = os.getenv(name)
+        if v is None:
+            return str(default)
+        return str(v)
+    except Exception:
+        return str(default)
+
+
+def env_int(name: str, default: int = 0) -> int:
+    try:
+        v = os.getenv(name)
+        if v is None:
+            return int(default)
+        return int(str(v).strip())
+    except Exception:
+        return int(default)
+
+
+def env_float(name: str, default: float = 0.0) -> float:
+    try:
+        v = os.getenv(name)
+        if v is None:
+            return float(default)
+        return float(str(v).strip())
+    except Exception:
+        return float(default)
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    try:
+        v = os.getenv(name)
+        if v is None:
+            return bool(default)
+        s = str(v).strip().lower()
+        if not s:
+            return bool(default)
+        return s in ("1", "true", "yes", "y", "on")
+    except Exception:
+        return bool(default)
+
+
 def build_resolve_url(repo_id: str, rel_path: str, *, repo_type: str) -> str:
     rel_path = str(rel_path).lstrip("/")
     if str(repo_type).strip().lower() == "dataset":

@@ -15,125 +15,73 @@ import sharp_dataset_pipeline.hf_upload as hf_upload
 import sharp_dataset_pipeline.index_sync as hf_index_sync
 import sharp_dataset_pipeline.parquet_tools as parquet_tools
 
-def _env_flag(name: str, default: bool) -> bool:
-    v = os.getenv(name)
-    if v is None:
-        return bool(default)
 
-    return str(v).strip().lower() in ("1", "true", "yes", "y")
-
-def _env_int(name: str, default: int) -> int:
-    v = os.getenv(name)
-    if v is None:
-        return int(default)
+def _load_dotenv_if_present() -> None:
     try:
-        return int(str(v).strip())
+        base_dir = os.path.dirname(os.path.abspath(__file__))
     except Exception:
-        return int(default)
+        base_dir = os.getcwd()
 
-def _env_str(name: str, default: str) -> str:
-    v = os.getenv(name)
-    if v is None:
-        return str(default)
-    return str(v)
+    loaded_keys = set()
 
-
-def _load_unsplash_key_pool(json_path: str):
-    try:
-        p = str(json_path or "").strip()
-        if not p:
-            return []
-        if not os.path.exists(p):
-            return []
-        raw = open(p, "r", encoding="utf-8").read()
-    except Exception:
-        return []
-
-    def _normalize_items(obj):
-        if obj is None:
-            return []
-        if isinstance(obj, dict):
-            obj = [obj]
-        if not isinstance(obj, list):
-            return []
-        out = []
-        for it in obj:
-            if not isinstance(it, dict):
-                continue
-            k = it.get("UNSPLASH_ACCESS_KEY") or it.get("unsplash_access_key") or it.get("access_key")
-            k = str(k or "").strip()
-            if not k:
-                continue
-            an = it.get("UNSPLASH_APP_NAME") or it.get("unsplash_app_name") or it.get("app_name")
-            an = str(an or "").strip()
-            if not an:
-                an = str(APP_NAME or "").strip() or "sharp-ply-share"
-            out.append({"UNSPLASH_ACCESS_KEY": k, "UNSPLASH_APP_NAME": an})
-        return out
-
-    try:
-        return _normalize_items(json.loads(raw))
-    except Exception:
-        pass
-
-    try:
-        s = str(raw or "").strip()
-        if not s:
-            return []
-        # Tolerate the current file style (not valid JSON):
-        # {
-        #   { UNSPLASH_APP_NAME:"...", UNSPLASH_ACCESS_KEY:"..." },
-        #   ...
-        # }
-        if s.startswith("{") and s.endswith("}"):
-            s = "[" + s[1:-1] + "]"
-        s = re.sub(r"(?m)\b(UNSPLASH_APP_NAME|UNSPLASH_ACCESS_KEY)\s*:", r'"\\1":', s)
-        s = re.sub(r",\s*([}\]])", r"\\1", s)
-        obj = json.loads(s)
-        return _normalize_items(obj)
-    except Exception:
-        pass
-
-    try:
-        s = str(raw or "")
-        blocks = []
+    def _apply_one(path: str, *, allow_override_loaded: bool) -> None:
         try:
-            blocks = re.findall(r"\{[^{}]*\}", s, flags=re.DOTALL)
+            if not path or (not os.path.isfile(path)):
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                for raw in f:
+                    line = str(raw or "").strip()
+                    if not line:
+                        continue
+                    if line.startswith("#"):
+                        continue
+                    if line.lower().startswith("export "):
+                        line = line[7:].lstrip()
+                    if "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = str(k or "").strip()
+                    v = str(v or "").strip()
+                    if not k:
+                        continue
+                    can_override = bool(allow_override_loaded) and (k in loaded_keys)
+                    if (k in os.environ) and (not can_override):
+                        continue
+                    if (len(v) >= 2) and ((v[0] == v[-1]) and v[0] in ("\"", "'")):
+                        v = v[1:-1]
+                    if not v:
+                        continue
+                    os.environ[k] = v
+                    loaded_keys.add(k)
         except Exception:
-            blocks = []
+            return
 
-        out = []
-        for b in blocks or []:
-            try:
-                km = re.search(r"\bUNSPLASH_ACCESS_KEY\s*:\s*['\"]([^'\"]+)['\"]", b)
-                if not km:
-                    km = re.search(r"\bunsplash_access_key\s*:\s*['\"]([^'\"]+)['\"]", b)
-                if not km:
-                    km = re.search(r"\baccess_key\s*:\s*['\"]([^'\"]+)['\"]", b)
-                if not km:
-                    continue
-                k = str(km.group(1) or "").strip()
-                if not k:
-                    continue
-
-                am = re.search(r"\bUNSPLASH_APP_NAME\s*:\s*['\"]([^'\"]+)['\"]", b)
-                if not am:
-                    am = re.search(r"\bunsplash_app_name\s*:\s*['\"]([^'\"]+)['\"]", b)
-                if not am:
-                    am = re.search(r"\bapp_name\s*:\s*['\"]([^'\"]+)['\"]", b)
-                an = str(am.group(1) if am else "").strip()
-
-                out.append({"UNSPLASH_ACCESS_KEY": k, "UNSPLASH_APP_NAME": an})
-            except Exception:
-                continue
-
-        out = _normalize_items(out)
-        if out:
-            return out
+    dirs = []
+    try:
+        dirs.append(base_dir)
+    except Exception:
+        pass
+    try:
+        cwd = os.getcwd()
+        if cwd and os.path.abspath(cwd) != os.path.abspath(base_dir):
+            dirs.append(cwd)
     except Exception:
         pass
 
-    return []
+    # Load order: .env then .env.local
+    for d in dirs:
+        try:
+            _apply_one(os.path.join(d, ".env"), allow_override_loaded=False)
+            _apply_one(os.path.join(d, ".env.local"), allow_override_loaded=True)
+        except Exception:
+            continue
+
+
+_load_dotenv_if_present()
+
+_env_flag = hf_utils.env_flag
+_env_int = hf_utils.env_int
+_env_str = hf_utils.env_str
 
 def _choose_bucket_per_page(remaining: int, hard_max: int) -> int:
     try:
@@ -167,7 +115,7 @@ SAVE_DIR = os.path.join(OUTPUT_DIR, "runs", RUN_ID)
 IMAGES_DIR = os.path.join(SAVE_DIR, "images")
 GAUSSIANS_DIR = os.path.join(SAVE_DIR, "gaussians")
 SOURCE = _env_str("SOURCE", "list").strip().lower()  # search | list
-MAX_CANDIDATES = _env_int("MAX_CANDIDATES", 200)
+MAX_CANDIDATES = _env_int("MAX_CANDIDATES", 8)
 MAX_IMAGES = _env_int("MAX_IMAGES", -1)
 INJECT_EXIF = _env_flag("INJECT_EXIF", True)
 STOP_ON_RATE_LIMIT = _env_flag("STOP_ON_RATE_LIMIT", True)
@@ -247,6 +195,27 @@ GSBOX_SPZ_VERSION = _env_int("GSBOX_SPZ_VERSION", 0)
 GSCONVERTER_COMPRESSION_LEVEL = _env_int("GSCONVERTER_COMPRESSION_LEVEL", 6)
 
 PLY_KEEP_LAST = _env_int("PLY_KEEP_LAST", 10)
+
+HF_UPLOAD_BATCH_SIZE = _env_int("HF_UPLOAD_BATCH_SIZE", 1)
+try:
+    _default_wait = 200 if int(HF_UPLOAD_BATCH_SIZE) > 1 else 0
+except Exception:
+    _default_wait = 0
+HF_UPLOAD_BATCH_WAIT_MS = _env_int("HF_UPLOAD_BATCH_WAIT_MS", int(_default_wait))
+
+PIPELINE_HEARTBEAT_SECS = float(os.getenv("PIPELINE_HEARTBEAT_SECS", "10"))
+STALL_WARN_SECS = float(os.getenv("STALL_WARN_SECS", "120"))
+
+ANT_ENABLED = _env_flag("ANT_ENABLED", True)
+ANT_CANDIDATE_RANGES = _env_int("ANT_CANDIDATE_RANGES", 6)
+try:
+    ANT_EPSILON = float(os.getenv("ANT_EPSILON", "0.2"))
+except Exception:
+    ANT_EPSILON = 0.2
+try:
+    ANT_FRESH_SECS = float(os.getenv("ANT_FRESH_SECS", "90"))
+except Exception:
+    ANT_FRESH_SECS = 90.0
 # ==========================================================
 
 UNSPLASH_API_BASE = "https://api.unsplash.com"
@@ -373,6 +342,34 @@ def _run_sharp_predict_once(input_path):
     extra = ["-v"] if SHARP_VERBOSE else []
     plys_before = _list_gaussian_plys()
 
+    def _is_cuda_device(dev: str) -> bool:
+        try:
+            s = str(dev or "").strip().lower()
+            if not s or s == "default":
+                return True
+            if "cuda" in s or s in ("gpu", "nvidia"):
+                return True
+            return False
+        except Exception:
+            return True
+
+    def _predict_timeout_s() -> float | None:
+        try:
+            raw = str(os.getenv("SHARP_PREDICT_TIMEOUT_SECS", "") or "").strip()
+            if raw:
+                v = float(raw)
+                return None if v <= 0 else float(v)
+        except Exception:
+            pass
+        try:
+            if _is_cuda_device(SHARP_DEVICE):
+                v = float(str(os.getenv("SHARP_PREDICT_TIMEOUT_SECS_CUDA", "1200") or "1200").strip())
+            else:
+                v = float(str(os.getenv("SHARP_PREDICT_TIMEOUT_SECS_CPU", "3600") or "3600").strip())
+            return None if v <= 0 else float(v)
+        except Exception:
+            return 1200.0
+
     def _sig(p: str):
         try:
             st = os.stat(p)
@@ -413,7 +410,35 @@ def _run_sharp_predict_once(input_path):
 
     try:
         try:
-            subprocess.run(cmd, cwd=ML_SHARP_DIR, check=True, **popen_kw)
+            to_s = _predict_timeout_s()
+            p = subprocess.Popen(cmd, cwd=ML_SHARP_DIR, **popen_kw)
+            try:
+                p.wait(timeout=to_s)
+            except subprocess.TimeoutExpired:
+                try:
+                    if os.name == "nt":
+                        import signal
+
+                        if hasattr(signal, "CTRL_BREAK_EVENT"):
+                            p.send_signal(signal.CTRL_BREAK_EVENT)
+                            try:
+                                p.wait(timeout=5)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+                try:
+                    p.wait(timeout=5)
+                except Exception:
+                    pass
+                print_debug(f"predict timeout（跳过） | id={os.path.splitext(os.path.basename(str(input_path)))[0]} | device={str(SHARP_DEVICE)} | timeout_s={int(to_s or 0)}")
+                return []
+            if int(p.returncode or 0) != 0:
+                raise subprocess.CalledProcessError(int(p.returncode or 1), cmd)
         except subprocess.CalledProcessError as e:
             print_debug(f"ml-sharp 通过 'sharp predict' 执行失败，将尝试源码方式运行 | err={str(e)}")
 
@@ -439,7 +464,35 @@ def _run_sharp_predict_once(input_path):
                 "main_cli()"
             )
             cmd2 = ["conda", "run", "-n", CONDA_ENV_NAME, "python", "-c", code]
-            subprocess.run(cmd2, cwd=ML_SHARP_DIR, check=True, **popen_kw)
+            to_s = _predict_timeout_s()
+            p2 = subprocess.Popen(cmd2, cwd=ML_SHARP_DIR, **popen_kw)
+            try:
+                p2.wait(timeout=to_s)
+            except subprocess.TimeoutExpired:
+                try:
+                    if os.name == "nt":
+                        import signal
+
+                        if hasattr(signal, "CTRL_BREAK_EVENT"):
+                            p2.send_signal(signal.CTRL_BREAK_EVENT)
+                            try:
+                                p2.wait(timeout=5)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                try:
+                    p2.kill()
+                except Exception:
+                    pass
+                try:
+                    p2.wait(timeout=5)
+                except Exception:
+                    pass
+                print_debug(f"predict timeout（源码方式，跳过） | id={os.path.splitext(os.path.basename(str(input_path)))[0]} | device={str(SHARP_DEVICE)} | timeout_s={int(to_s or 0)}")
+                return []
+            if int(p2.returncode or 0) != 0:
+                raise subprocess.CalledProcessError(int(p2.returncode or 1), cmd2)
     finally:
         _append_gpu_log("after_predict", input_path)
 
@@ -654,7 +707,10 @@ def run_pipeline():
                 "UNSPLASH_ACCESS_KEY_JSON",
                 os.path.join(os.path.dirname(__file__), "UNSPLASH_ACCESS_KEY.json"),
             )
-            unsplash_key_pool = _load_unsplash_key_pool(keys_path)
+            unsplash_key_pool = unsplash.load_unsplash_key_pool(
+                keys_path,
+                default_app_name=str(APP_NAME or "").strip() or "sharp-ply-share",
+            )
         except Exception:
             unsplash_key_pool = None
 
@@ -665,27 +721,36 @@ def run_pipeline():
     os.makedirs(GAUSSIANS_DIR, exist_ok=True)
 
     try:
-        max_candidates_eff = int(_env_int("MAX_CANDIDATES", int(MAX_CANDIDATES)))
-    except Exception:
-        max_candidates_eff = int(MAX_CANDIDATES)
-    try:
         max_images_eff = int(_env_int("MAX_IMAGES", int(MAX_IMAGES)))
     except Exception:
         max_images_eff = int(MAX_IMAGES)
 
+    # MAX_CANDIDATES is repurposed as a prefetch buffer target (download queue capacity).
+    # Candidate scan is always unlimited; MAX_IMAGES is the only run budget limiter.
     try:
-        if int(max_images_eff) < 0 and os.getenv("MAX_CANDIDATES") is None:
-            max_candidates_eff = -1
-            try:
-                print_debug("Config | MAX_IMAGES=-1 detected and MAX_CANDIDATES not set: defaulting MAX_CANDIDATES to -1 (unlimited)")
-            except Exception:
-                pass
+        prefetch_eff = int(_env_int("MAX_CANDIDATES", int(MAX_CANDIDATES)))
+    except Exception:
+        prefetch_eff = int(MAX_CANDIDATES)
+    prefetch_eff = max(1, int(prefetch_eff))
+
+    try:
+        if os.getenv("DOWNLOAD_QUEUE_MAX") is None:
+            download_queue_max_eff = int(prefetch_eff)
+        else:
+            download_queue_max_eff = int(_env_int("DOWNLOAD_QUEUE_MAX", int(DOWNLOAD_QUEUE_MAX)))
+    except Exception:
+        download_queue_max_eff = int(prefetch_eff)
+
+    try:
+        print_debug(
+            f"Config | SOURCE={str(SOURCE)} | MAX_IMAGES={int(max_images_eff)} | MAX_CANDIDATES(prefetch)={int(prefetch_eff)} | DOWNLOAD_QUEUE_MAX={int(download_queue_max_eff)} | LIST_PER_PAGE={int(LIST_PER_PAGE)} | LIST_AUTO_SEEK={bool(LIST_AUTO_SEEK)}"
+        )
     except Exception:
         pass
 
     try:
         print_debug(
-            f"Config | SOURCE={str(SOURCE)} | MAX_IMAGES={int(max_images_eff)} | MAX_CANDIDATES={int(max_candidates_eff)} | LIST_PER_PAGE={int(LIST_PER_PAGE)} | LIST_AUTO_SEEK={bool(LIST_AUTO_SEEK)}"
+            f"Config | HF_UPLOAD_BATCH_SIZE={int(HF_UPLOAD_BATCH_SIZE)} | HF_UPLOAD_BATCH_WAIT_MS={int(HF_UPLOAD_BATCH_WAIT_MS)} | PIPELINE_HEARTBEAT_SECS={float(PIPELINE_HEARTBEAT_SECS)} | STALL_WARN_SECS={float(STALL_WARN_SECS)} | ANT_ENABLED={int(bool(ANT_ENABLED))} | ANT_CANDIDATE_RANGES={int(ANT_CANDIDATE_RANGES)} | ANT_EPSILON={float(ANT_EPSILON)} | ANT_FRESH_SECS={float(ANT_FRESH_SECS)}"
         )
     except Exception:
         pass
@@ -905,13 +970,13 @@ def run_pipeline():
         list_per_page=int(LIST_PER_PAGE),
         list_auto_seek=bool(LIST_AUTO_SEEK),
         list_seek_back_pages=int(LIST_SEEK_BACK_PAGES),
-        max_candidates=int(max_candidates_eff),
+        max_candidates=-1,
         max_images=int(max_images_eff),
         range_size=int(RANGE_SIZE),
         stop_on_rate_limit=bool(STOP_ON_RATE_LIMIT),
         input_images_dir=INPUT_IMAGES_DIR,
         inject_exif=bool(INJECT_EXIF),
-        download_queue_max=int(DOWNLOAD_QUEUE_MAX),
+        download_queue_max=int(download_queue_max_eff),
         upload_queue_max=int(UPLOAD_QUEUE_MAX),
         upload_workers=int(UPLOAD_WORKERS),
         hf_upload=bool(HF_UPLOAD),
@@ -922,6 +987,17 @@ def run_pipeline():
         ply_keep_last=int(PLY_KEEP_LAST),
         gaussians_dir=GAUSSIANS_DIR,
         sigint_window_s=float(os.getenv("SIGINT_WINDOW_S", "2.0")),
+
+        hf_upload_batch_size=int(HF_UPLOAD_BATCH_SIZE),
+        hf_upload_batch_wait_ms=int(HF_UPLOAD_BATCH_WAIT_MS),
+
+        pipeline_heartbeat_secs=float(PIPELINE_HEARTBEAT_SECS),
+        stall_warn_secs=float(STALL_WARN_SECS),
+
+        ant_enabled=bool(ANT_ENABLED),
+        ant_candidate_ranges=int(ANT_CANDIDATE_RANGES),
+        ant_epsilon=float(ANT_EPSILON),
+        ant_fresh_secs=float(ANT_FRESH_SECS),
     )
 
     run_sharp_predict_once_fn = _run_sharp_predict_once

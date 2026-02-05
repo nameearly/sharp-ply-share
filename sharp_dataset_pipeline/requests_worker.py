@@ -17,30 +17,9 @@ from . import hf_upload
 from . import hf_utils
 from . import unsplash
 
-
-def _env_str(name: str, default: str = "") -> str:
-    v = os.getenv(name)
-    if v is None:
-        return str(default)
-    return str(v)
-
-
-def _env_int(name: str, default: int) -> int:
-    v = os.getenv(name)
-    if v is None:
-        return int(default)
-    try:
-        return int(str(v).strip())
-    except Exception:
-        return int(default)
-
-
-def _env_flag(name: str, default: bool = False) -> bool:
-    v = os.getenv(name)
-    if v is None:
-        return bool(default)
-    return str(v).strip().lower() in ("1", "true", "yes", "y")
-
+_env_str = hf_utils.env_str
+_env_int = hf_utils.env_int
+_env_flag = hf_utils.env_flag
 
 def _is_precondition_failed(err: Exception) -> bool:
     try:
@@ -101,6 +80,20 @@ def stop_requested() -> bool:
         return False
 
 
+def wait_if_paused() -> None:
+    while (not stop_requested()) and pause_requested():
+        time.sleep(0.2)
+
+
+def gate() -> bool:
+    if stop_requested():
+        return False
+    wait_if_paused()
+    if stop_requested():
+        return False
+    return True
+
+
 def set_pause(paused: bool) -> bool:
     p = _control_path(_pause_file())
     try:
@@ -130,97 +123,6 @@ def touch_stop() -> None:
             pass
     except Exception:
         pass
-
-
-def _load_unsplash_key_pool(json_path: str):
-    try:
-        p = str(json_path or "").strip()
-        if not p:
-            return []
-        if not os.path.exists(p):
-            return []
-        raw = open(p, "r", encoding="utf-8").read()
-    except Exception:
-        return []
-
-    def _normalize_items(obj):
-        if obj is None:
-            return []
-        if isinstance(obj, dict):
-            obj = [obj]
-        if not isinstance(obj, list):
-            return []
-        out = []
-        for it in obj:
-            if not isinstance(it, dict):
-                continue
-            k = it.get("UNSPLASH_ACCESS_KEY") or it.get("unsplash_access_key") or it.get("access_key")
-            k = str(k or "").strip()
-            if not k:
-                continue
-            an = it.get("UNSPLASH_APP_NAME") or it.get("unsplash_app_name") or it.get("app_name")
-            an = str(an or "").strip()
-            out.append({"UNSPLASH_ACCESS_KEY": k, "UNSPLASH_APP_NAME": an})
-        return out
-
-    try:
-        return _normalize_items(json.loads(raw))
-    except Exception:
-        pass
-
-    try:
-        s = str(raw or "").strip()
-        if not s:
-            return []
-        if s.startswith("{") and s.endswith("}"):
-            s = "[" + s[1:-1] + "]"
-        s = re.sub(r"(?m)\b(UNSPLASH_APP_NAME|UNSPLASH_ACCESS_KEY)\s*:", r'"\\1":', s)
-        s = re.sub(r",\s*([}\]])", r"\\1", s)
-        obj = json.loads(s)
-        return _normalize_items(obj)
-    except Exception:
-        pass
-
-    try:
-        s = str(raw or "")
-        blocks = []
-        try:
-            blocks = re.findall(r"\{[^{}]*\}", s, flags=re.DOTALL)
-        except Exception:
-            blocks = []
-
-        out = []
-        for b in blocks or []:
-            try:
-                km = re.search(r"\bUNSPLASH_ACCESS_KEY\s*:\s*['\"]([^'\"]+)['\"]", b)
-                if not km:
-                    km = re.search(r"\bunsplash_access_key\s*:\s*['\"]([^'\"]+)['\"]", b)
-                if not km:
-                    km = re.search(r"\baccess_key\s*:\s*['\"]([^'\"]+)['\"]", b)
-                if not km:
-                    continue
-                k = str(km.group(1) or "").strip()
-                if not k:
-                    continue
-
-                am = re.search(r"\bUNSPLASH_APP_NAME\s*:\s*['\"]([^'\"]+)['\"]", b)
-                if not am:
-                    am = re.search(r"\bunsplash_app_name\s*:\s*['\"]([^'\"]+)['\"]", b)
-                if not am:
-                    am = re.search(r"\bapp_name\s*:\s*['\"]([^'\"]+)['\"]", b)
-                an = str(am.group(1) if am else "").strip()
-
-                out.append({"UNSPLASH_ACCESS_KEY": k, "UNSPLASH_APP_NAME": an})
-            except Exception:
-                continue
-
-        out = _normalize_items(out)
-        if out:
-            return out
-    except Exception:
-        pass
-
-    return []
 
 
 def _parse_code_blocks(text: str) -> list[str]:
@@ -446,6 +348,34 @@ def _run_sharp_predict(jpg_path: str, gaussians_dir: str) -> str | None:
     device = _env_str("SHARP_DEVICE", "default").strip() or "default"
     verbose = _env_flag("SHARP_VERBOSE", False)
 
+    def _is_cuda_device(dev: str) -> bool:
+        try:
+            s = str(dev or "").strip().lower()
+            if not s or s == "default":
+                return True
+            if "cuda" in s or s in ("gpu", "nvidia"):
+                return True
+            return False
+        except Exception:
+            return True
+
+    def _predict_timeout_s() -> float | None:
+        try:
+            raw = str(os.getenv("SHARP_PREDICT_TIMEOUT_SECS", "") or "").strip()
+            if raw:
+                v = float(raw)
+                return None if v <= 0 else float(v)
+        except Exception:
+            pass
+        try:
+            if _is_cuda_device(device):
+                v = float(str(os.getenv("SHARP_PREDICT_TIMEOUT_SECS_CUDA", "1200") or "1200").strip())
+            else:
+                v = float(str(os.getenv("SHARP_PREDICT_TIMEOUT_SECS_CPU", "3600") or "3600").strip())
+            return None if v <= 0 else float(v)
+        except Exception:
+            return 1200.0
+
     if not ml_sharp_dir:
         return None
 
@@ -479,7 +409,34 @@ def _run_sharp_predict(jpg_path: str, gaussians_dir: str) -> str | None:
         popen_kw = {}
 
     try:
-        subprocess.run(cmd, cwd=ml_sharp_dir, check=True, **popen_kw)
+        to_s = _predict_timeout_s()
+        p = subprocess.Popen(cmd, cwd=ml_sharp_dir, **popen_kw)
+        try:
+            p.wait(timeout=to_s)
+        except subprocess.TimeoutExpired:
+            try:
+                if os.name == "nt":
+                    import signal
+
+                    if hasattr(signal, "CTRL_BREAK_EVENT"):
+                        p.send_signal(signal.CTRL_BREAK_EVENT)
+                        try:
+                            p.wait(timeout=5)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            try:
+                p.kill()
+            except Exception:
+                pass
+            try:
+                p.wait(timeout=5)
+            except Exception:
+                pass
+            return None
+        if int(p.returncode or 0) != 0:
+            return None
     except Exception:
         return None
 
@@ -679,6 +636,10 @@ def run_once():
     from huggingface_hub import HfApi
     from huggingface_hub import CommitOperationAdd
 
+    wait_if_paused()
+    if stop_requested():
+        return {"mode": "", "ingested": 0, "processed": 0}
+
     repo_id = _env_str("HF_REPO_ID", "eatmorefruit/sharp-ply-share").strip()
     repo_type = _env_str("HF_REPO_TYPE", "dataset").strip().lower() or "dataset"
 
@@ -755,7 +716,10 @@ def run_once():
             "UNSPLASH_ACCESS_KEY_JSON",
             os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "UNSPLASH_ACCESS_KEY.json"),
         )
-        unsplash_key_pool = _load_unsplash_key_pool(keys_path)
+        unsplash_key_pool = unsplash.load_unsplash_key_pool(
+            keys_path,
+            default_app_name=_env_str("UNSPLASH_APP_NAME", "sharp-ply-share"),
+        )
 
     if str(os.getenv("UNSPLASH_ACCESS_KEY", "") or "").strip() or unsplash_key_pool:
         unsplash.configure_unsplash(
@@ -772,9 +736,13 @@ def run_once():
     processed = 0
 
     if ingest_enabled:
+        if not gate():
+            return {"mode": mode, "ingested": int(ingested), "processed": int(processed)}
         d = api.get_discussion_details(repo_id=repo_id, repo_type=repo_type, discussion_num=int(discussion_num))
         events = list(d.events or [])
         for evt in events:
+            if not gate():
+                break
             try:
                 if getattr(evt, "type", None) != "comment":
                     continue
@@ -877,6 +845,8 @@ def run_once():
                 _print(f"ingest error (ignored) | err={str(e)}")
 
     if process_enabled:
+        if not gate():
+            return {"mode": mode, "ingested": int(ingested), "processed": int(processed)}
         max_per_run = max(1, min(_env_int("REQ_MAX_PER_RUN", 16), 256))
         done_ids = set()
         try:
@@ -889,6 +859,8 @@ def run_once():
         lines = []
         for rp in inbox_paths:
             if did >= int(max_per_run):
+                break
+            if not gate():
                 break
             try:
                 req_obj = _hf_download_json(repo_id=repo_id, repo_type=repo_type, filename=rp)
@@ -921,6 +893,8 @@ def run_once():
                 err = None
                 try:
                     if src == "unsplash":
+                        if not gate():
+                            raise RuntimeError("stopped")
                         pid = str(req_obj.get("unsplash_id") or "").strip()
                         if not pid:
                             raise RuntimeError("unsplash_id missing")
@@ -944,6 +918,8 @@ def run_once():
                                 "duplicate": True,
                             }
                         else:
+                            if not gate():
+                                raise RuntimeError("stopped")
                             details = unsplash.fetch_photo_details(pid)
                             if not details:
                                 raise RuntimeError("unsplash fetch_photo_details failed")
@@ -952,13 +928,19 @@ def run_once():
                                 raise RuntimeError("unsplash download_location missing")
                             jpg_local = os.path.join(images_dir, f"{pid}.jpg")
                             if (not os.path.isfile(jpg_local)) or os.path.getsize(jpg_local) <= 0:
+                                if not gate():
+                                    raise RuntimeError("stopped")
                                 if not unsplash.download_image(download_location, jpg_local):
                                     raise RuntimeError("unsplash download failed")
+                            if not gate():
+                                raise RuntimeError("stopped")
                             ply_local = _run_sharp_predict(jpg_local, gaussians_dir)
                             if not ply_local:
                                 raise RuntimeError("sharp predict failed")
                             spz_enabled = "spz" in want
                             gsplat_enabled = ("share" in want) or _env_flag("REQ_GSPLAT_DEFAULT", False)
+                            if not gate():
+                                raise RuntimeError("stopped")
                             result = hf_upload.upload_sample_pair(
                                 repo_id,
                                 pid,
@@ -1030,16 +1012,19 @@ def run_once():
                                 except Exception:
                                     pass
                     elif src == "url":
-                        u = _normalize_url(str(req_obj.get("url") or "").strip())
-                        if not u:
+                        if not gate():
+                            raise RuntimeError("stopped")
+                        url = str(req_obj.get("url") or "").strip()
+                        if not url:
                             raise RuntimeError("url missing")
-                        tmp_name = "ext_" + _sha1(u)[:12] + ".jpg"
-                        tmp_path = os.path.join(images_dir, tmp_name)
-                        if (not os.path.isfile(tmp_path)) or os.path.getsize(tmp_path) <= 0:
-                            if not _download_url_to_file(u, tmp_path):
-                                raise RuntimeError("download url failed")
+                        if not gate():
+                            raise RuntimeError("stopped")
+                        tmp_path = _download_url_to_file(url, images_dir)
+                        if not tmp_path:
+                            raise RuntimeError("download_url failed")
                         sha = _sha256_file(tmp_path)
                         eid2 = str(sha)[:16]
+                        jpg_local = os.path.join(images_dir, f"{eid2}.jpg")
                         rel_dir = f"{hf_subdir_external}/{eid2}"
                         rel_ply = f"{rel_dir}/{eid2}.ply"
                         rel_spz = f"{rel_dir}/{eid2}.spz"
@@ -1058,12 +1043,13 @@ def run_once():
                                 "ply_url": hf_utils.build_resolve_url(repo_id, rel_ply, repo_type=repo_type),
                                 "spz_url": hf_utils.build_resolve_url(repo_id, rel_spz, repo_type=repo_type) if spz_exists else None,
                                 "sha256": sha,
-                                "normalized_url": u,
+                                "normalized_url": url,
                                 "duplicate": True,
                             }
                         else:
-                            jpg_local = os.path.join(images_dir, f"{eid2}.jpg")
-                            if not os.path.isfile(jpg_local):
+                            if not gate():
+                                raise RuntimeError("stopped")
+                            if (not os.path.isfile(jpg_local)) or os.path.getsize(jpg_local) <= 0:
                                 try:
                                     os.replace(tmp_path, jpg_local)
                                 except Exception:
@@ -1073,11 +1059,23 @@ def run_once():
                                         shutil.copyfile(tmp_path, jpg_local)
                                     except Exception:
                                         pass
+                            else:
+                                try:
+                                    if os.path.normcase(os.path.abspath(str(tmp_path))) != os.path.normcase(
+                                        os.path.abspath(str(jpg_local))
+                                    ) and os.path.isfile(tmp_path):
+                                        os.remove(tmp_path)
+                                except Exception:
+                                    pass
+                            if not gate():
+                                raise RuntimeError("stopped")
                             ply_local = _run_sharp_predict(jpg_local, gaussians_dir)
                             if not ply_local:
                                 raise RuntimeError("sharp predict failed")
                             spz_enabled = "spz" in want
                             gsplat_enabled = ("share" in want) or _env_flag("REQ_GSPLAT_DEFAULT", False)
+                            if not gate():
+                                raise RuntimeError("stopped")
                             result = hf_upload.upload_sample_pair(
                                 repo_id,
                                 eid2,
@@ -1100,7 +1098,7 @@ def run_once():
                                 gsconverter_compression_level=_env_int("GSCONVERTER_COMPRESSION_LEVEL", 6),
                                 debug_fn=_print,
                             )
-                            result = {**(result or {}), "sha256": sha, "normalized_url": u}
+                            result = {**(result or {}), "sha256": sha, "normalized_url": url}
                 except Exception as e:
                     err = str(e)
 
@@ -1156,9 +1154,6 @@ def run_once():
 def main():
     once = _env_flag("REQ_ONCE", True)
     poll = float(_env_int("REQ_POLL_SECS", 60))
-
-    sigint_window_s = float(os.getenv("SIGINT_WINDOW_S", "2.0") or "2.0")
-    sig_state = {"last": 0.0}
     stop_flag = {"stop": False}
 
     def _request_stop(reason: str):
@@ -1171,18 +1166,7 @@ def main():
 
     def _sigint_handler(signum, frame):
         try:
-            now = time.time()
-            if pause_requested():
-                set_pause(False)
-                _print(f"REQ: resume requested | pause_file={_control_path(_pause_file())}")
-                return
-            prev = float(sig_state.get("last") or 0.0)
-            sig_state["last"] = float(now)
-            if prev > 0.0 and (now - prev) <= float(sigint_window_s):
-                _request_stop("SIGINT_DOUBLE")
-                return
-            set_pause(True)
-            _print(f"REQ: pause requested | pause_file={_control_path(_pause_file())}")
+            _request_stop("SIGINT")
         except Exception:
             return
 
@@ -1199,8 +1183,17 @@ def main():
                 try:
                     if msvcrt.kbhit():
                         ch = msvcrt.getwch()
-                        if ch in ("\x04", "\x1a"):
-                            _request_stop("CTRL_D")
+                        try:
+                            c2 = str(ch or "")
+                        except Exception:
+                            c2 = ""
+                        c2 = c2.lower()
+                        if c2 == "p":
+                            paused = bool(pause_requested())
+                            set_pause((not paused))
+                            _print(f"REQ: {'pause' if (not paused) else 'resume'} requested | pause_file={_control_path(_pause_file())}")
+                        elif c2 == "q":
+                            _request_stop("KEY_Q")
                             break
                 except Exception:
                     time.sleep(0.1)

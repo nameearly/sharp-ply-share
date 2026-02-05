@@ -7,6 +7,8 @@ import math
 import shutil
 import time
 
+from . import metrics
+
 
 def make_small_ply(
     ply_path: str,
@@ -148,8 +150,6 @@ def _chunked_upload_and_get_model_file_url(
     debug_fn,
 ) -> str | None:
     try:
-        import requests
-
         src = os.path.abspath(str(file_path))
         if not os.path.isfile(src):
             return None
@@ -157,6 +157,19 @@ def _chunked_upload_and_get_model_file_url(
         if file_size <= 0:
             return None
 
+        start_ts = float(time.time())
+        try:
+            total_timeout_s = float(str(os.getenv("GSPLAT_TOTAL_TIMEOUT_SECS", "3600") or "3600").strip())
+        except Exception:
+            total_timeout_s = 3600.0
+        total_timeout_s = max(30.0, float(total_timeout_s))
+
+        try:
+            env_mb = str(os.getenv("GSPLAT_CHUNK_SIZE_MB", "") or "").strip()
+            if env_mb:
+                chunk_size = int(float(env_mb) * 1024 * 1024)
+        except Exception:
+            pass
         chunk_size = int(chunk_size)
         if chunk_size <= 0:
             chunk_size = 50 * 1024 * 1024
@@ -217,10 +230,22 @@ def _chunked_upload_and_get_model_file_url(
         # Send chunks as base64 strings in JSON (same as gsplat.org frontend).
         with open(src, "rb") as f:
             for chunk_index in range(int(total_chunks)):
+                try:
+                    if (float(time.time()) - float(start_ts)) > float(total_timeout_s):
+                        if debug_fn:
+                            debug_fn(
+                                f"GSPLAT: chunked upload total timeout（跳过） | s={int(time.time() - start_ts)} | limit_s={int(total_timeout_s)} | idx={chunk_index}/{total_chunks}"
+                            )
+                        return None
+                except Exception:
+                    pass
+
                 raw = f.read(int(chunk_size))
                 if not raw:
                     break
+                enc0 = time.time()
                 data_b64 = base64.b64encode(raw).decode("ascii")
+                enc_s = max(0.0, float(time.time()) - float(enc0))
                 chunk_payload = {
                     "0": {
                         "uploadId": str(upload_id),
@@ -230,12 +255,23 @@ def _chunked_upload_and_get_model_file_url(
                         "size": int(len(raw)),
                     }
                 }
+                t0 = time.time()
                 chunk_resp = trpc_post(
                     gsplat_base,
                     "/share/trpc/order.chunkedUploadChunk?batch=1",
                     chunk_payload,
                     debug_fn=debug_fn,
                 )
+                took_s = max(0.0, float(time.time()) - float(t0))
+                try:
+                    if debug_fn:
+                        mb = float(len(raw)) / (1024.0 * 1024.0)
+                        spd = (mb / took_s) if took_s > 0 else 0.0
+                        debug_fn(
+                            f"GSPLAT: chunkedUploadChunk | idx={chunk_index + 1}/{total_chunks} | chunk_mb={mb:.2f} | enc_s={enc_s:.2f} | trpc_s={took_s:.2f} | mbps={spd:.2f}"
+                        )
+                except Exception:
+                    pass
                 if not chunk_resp:
                     return None
 
@@ -330,10 +366,24 @@ def trpc_post(base_url: str, path: str, payload: dict, *, debug_fn) -> dict | No
         import requests
 
         url = f"{str(base_url).rstrip('/')}{path}"
+        try:
+            connect_timeout = str(os.getenv("GSPLAT_TRPC_CONNECT_TIMEOUT_SECS", "") or "").strip()
+            read_timeout = str(os.getenv("GSPLAT_TRPC_TIMEOUT_SECS", "120") or "120").strip()
+            if connect_timeout:
+                req_timeout = (float(connect_timeout), float(read_timeout))
+            else:
+                req_timeout = float(read_timeout)
+        except Exception:
+            req_timeout = 120
         last_err = None
         for attempt in range(0, int(tries)):
             try:
-                r = requests.post(url, data=json.dumps(payload), headers={"content-type": "application/json"}, timeout=120)
+                r = requests.post(
+                    url,
+                    data=json.dumps(payload),
+                    headers={"content-type": "application/json"},
+                    timeout=req_timeout,
+                )
                 if int(r.status_code) != 200:
                     try:
                         if debug_fn:
@@ -408,6 +458,7 @@ def upload_and_create_view(
     debug_fn,
 ) -> dict | None:
     try:
+        t0 = float(time.time())
         src_ply = os.path.abspath(str(ply_path))
         if not os.path.isfile(src_ply):
             return None
@@ -435,8 +486,11 @@ def upload_and_create_view(
         except Exception:
             sz = 0
 
+        method = "direct"
+
         # If the payload is large, use chunked upload to avoid a huge single JSON request.
         if int(sz) >= int(20 * 1024 * 1024):
+            method = "chunked"
             model_file_url = _chunked_upload_and_get_model_file_url(
                 upload_ply,
                 gsplat_base=str(gsplat_base),
@@ -488,6 +542,18 @@ def upload_and_create_view(
             try:
                 if debug_fn:
                     debug_fn(f"GSPLAT: 未拿到 modelFileUrl，跳过 | resp={str(up_resp)[:400]}")
+            except Exception:
+                pass
+            try:
+                metrics.emit(
+                    "gsplat_upload_total",
+                    debug_fn=debug_fn,
+                    ok=False,
+                    s=float(max(0.0, float(time.time()) - float(t0))),
+                    ply_bytes=int(sz),
+                    method=str(method),
+                    **metrics.snapshot(),
+                )
             except Exception:
                 pass
             return None
@@ -605,16 +671,39 @@ def upload_and_create_view(
             return None
 
         gsplat_url = f"{str(gsplat_base).rstrip('/')}/viewer/{share_id}"
-        return {
+        out = {
             "gsplat_url": gsplat_url,
             "gsplat_share_id": str(share_id),
             "gsplat_order_id": str(order_id) if order_id else None,
             "gsplat_model_file_url": str(model_file_url),
         }
+        try:
+            metrics.emit(
+                "gsplat_upload_total",
+                debug_fn=debug_fn,
+                ok=True,
+                s=float(max(0.0, float(time.time()) - float(t0))),
+                ply_bytes=int(sz),
+                method=str(method),
+                **metrics.snapshot(),
+            )
+        except Exception:
+            pass
+        return out
     except Exception as e:
         try:
             if debug_fn:
                 debug_fn(f"GSPLAT: 上传/建分享异常 | err={str(e)}")
+        except Exception:
+            pass
+        try:
+            metrics.emit(
+                "gsplat_upload_total",
+                debug_fn=debug_fn,
+                ok=False,
+                err=str(e)[:200],
+                **metrics.snapshot(),
+            )
         except Exception:
             pass
         return None

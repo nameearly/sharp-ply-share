@@ -49,9 +49,8 @@ This pipeline supports cooperative pause/stop through files under `CONTROL_DIR`:
 
 Notes:
 
-- `Ctrl+C` is handled cooperatively (safe-point semantics): the pipeline will avoid hard-killing in-flight work and will stop as soon as it reaches the next check.
-- `Ctrl+C` toggles pause/resume by creating or deleting `PAUSE`.
-- `Ctrl+D` requests stop/exit by creating `STOP`. On Windows consoles, `Ctrl+Z` is also accepted as an exit shortcut.
+- `Ctrl+C` requests stop (safe-point semantics): the pipeline will avoid hard-killing in-flight work and will stop as soon as it reaches the next check.
+- On Windows consoles, press `p` to toggle pause/resume (create/delete `PAUSE`), and press `q` to request stop (create `STOP`).
 - `STOP` is terminal for the current run: if `STOP` exists, the pipeline will exit. To continue processing, delete `STOP` and restart the pipeline.
 
 Defaults:
@@ -73,16 +72,14 @@ Defaults:
 - `LIST_SEEK_BACK_PAGES`: seek-back pages when estimating start page (default: `2`)
 - `STOP_ON_RATE_LIMIT`: stop the pipeline when Unsplash rate limit is hit (default: `1`)
 
-### Scan limits
+### Limits
 
-- `MAX_CANDIDATES`: max candidate photos to consider per run (default: `200`).
-- `MAX_IMAGES`: max images to download per run (default: `-1`)
+- `MAX_IMAGES`: max images to download per run (default: `-1`). Use `-1` for unlimited.
+- `MAX_CANDIDATES`: downloader prefetch buffer target (same as `DOWNLOAD_QUEUE_MAX` unless you override it explicitly).
 
 Notes:
 
-- `MAX_IMAGES` is the main limiter for how many samples will be produced/processed.
-- Use `-1` for unlimited.
-- If `MAX_IMAGES` is not set, it defaults to `-1` (unlimited).
+- `MAX_IMAGES` is the limiter for how many samples will be produced/processed.
 
 ### SHARP / ml-sharp
 

@@ -30,6 +30,28 @@ def maybe_export_from_ply(
 
         tool = (tool or "").strip().lower() or "3dgsconverter"
 
+        timeout_s = None
+        try:
+            raw = str(os.getenv("SPZ_TIMEOUT_SECS", "") or "").strip()
+            if raw:
+                timeout_s = float(raw)
+        except Exception:
+            timeout_s = None
+        if timeout_s is None:
+            try:
+                if tool in ("3dgsconverter", "gsconverter", "gsconv"):
+                    timeout_s = float(str(os.getenv("SPZ_TIMEOUT_SECS_CUDA", "900") or "900").strip())
+                else:
+                    timeout_s = float(str(os.getenv("SPZ_TIMEOUT_SECS_CPU", "1800") or "1800").strip())
+            except Exception:
+                timeout_s = 900.0
+        try:
+            timeout_s = float(timeout_s)
+        except Exception:
+            timeout_s = 900.0
+        if timeout_s <= 0:
+            timeout_s = None
+
         def _print(msg: str):
             try:
                 if debug_fn:
@@ -266,12 +288,30 @@ def maybe_export_from_ply(
             except Exception:
                 src_for_gsbox = src
 
-            p = subprocess.run(_gsbox_cmd(src_for_gsbox), capture_output=True, text=True)
+            try:
+                p = subprocess.run(
+                    _gsbox_cmd(src_for_gsbox),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_s,
+                )
+            except subprocess.TimeoutExpired as e:
+                _print(f"SPZ: gsbox 超时（跳过） | timeout_s={int(timeout_s or 0)} | err={str(e)}")
+                return None
             if p.returncode != 0 or (not os.path.isfile(out)) or os.path.getsize(out) <= 0:
                 tmp = _ply_make_vertex_only_binary_little_endian(src)
                 if tmp:
                     _print(f"SPZ: gsbox 初次转换失败，将重写 vertex-only PLY 后重试 | ply={os.path.basename(src)}")
-                    p2 = subprocess.run(_gsbox_cmd(tmp), capture_output=True, text=True)
+                    try:
+                        p2 = subprocess.run(
+                            _gsbox_cmd(tmp),
+                            capture_output=True,
+                            text=True,
+                            timeout=timeout_s,
+                        )
+                    except subprocess.TimeoutExpired as e:
+                        _print(f"SPZ: gsbox 超时（跳过） | timeout_s={int(timeout_s or 0)} | err={str(e)}")
+                        return None
                     if p2.returncode != 0:
                         msg = ((p2.stderr or "") + "\n" + (p2.stdout or "")).strip()
                         _print(
@@ -318,7 +358,10 @@ def maybe_export_from_ply(
                         "--rgb",
                         "--force",
                     ]
-                    subprocess.run(cmd, check=True)
+                    subprocess.run(cmd, check=True, timeout=timeout_s)
+            except subprocess.TimeoutExpired as e:
+                _print(f"SPZ: 3dgsconverter 超时（跳过） | timeout_s={int(timeout_s or 0)} | err={str(e)}")
+                return None
             except Exception as e:
                 _print(f"SPZ: 3dgsconverter 转换失败，将自动回退到 gsbox | err={str(e)}")
                 tool = "gsbox"
@@ -351,12 +394,26 @@ def maybe_export_from_ply(
                 except Exception:
                     src_for_gsbox = src
 
-                p = subprocess.run(_gsbox_cmd(src_for_gsbox), capture_output=True, text=True)
+                try:
+                    p = subprocess.run(
+                        _gsbox_cmd(src_for_gsbox),
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_s,
+                    )
+                except subprocess.TimeoutExpired as e:
+                    _print(f"SPZ: gsbox 超时（跳过） | timeout_s={int(timeout_s or 0)} | err={str(e)}")
+                    return None
                 if p.returncode != 0 or (not os.path.isfile(out)) or os.path.getsize(out) <= 0:
                     tmp = _ply_make_vertex_only_binary_little_endian(src)
                     if tmp:
                         _print(f"SPZ: gsbox 初次转换失败，将重写 vertex-only PLY 后重试 | ply={os.path.basename(src)}")
-                        p2 = subprocess.run(_gsbox_cmd(tmp), capture_output=True, text=True)
+                        p2 = subprocess.run(
+                            _gsbox_cmd(tmp),
+                            capture_output=True,
+                            text=True,
+                            timeout=timeout_s,
+                        )
                         if p2.returncode != 0:
                             msg = ((p2.stderr or "") + "\n" + (p2.stdout or "")).strip()
                             _print(

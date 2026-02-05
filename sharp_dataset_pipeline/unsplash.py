@@ -1,3 +1,4 @@
+import os
 import re
 import time
 from urllib.parse import urlencode
@@ -87,11 +88,11 @@ def configure_unsplash(
     _APP_NAME = str(app_name or '').strip() or _APP_NAME
     _API_BASE = str(api_base or '').strip() or "https://api.unsplash.com"
     try:
-        _PER_PAGE = int(per_page)
+        _PER_PAGE = max(1, int(per_page))
     except Exception:
         _PER_PAGE = 10
     try:
-        _LIST_PER_PAGE = int(list_per_page)
+        _LIST_PER_PAGE = max(1, min(30, int(list_per_page)))
     except Exception:
         _LIST_PER_PAGE = 30
     _STOP_ON_RATE_LIMIT = bool(stop_on_rate_limit)
@@ -100,6 +101,99 @@ def configure_unsplash(
     _next_api_allowed_ts = 0.0
     _api_backoff_seconds = 0.0
     _rate_limited = False
+
+
+def load_unsplash_key_pool(json_path: str, *, default_app_name: str | None = None) -> list[dict]:
+    try:
+        p = str(json_path or "").strip()
+        if not p or (not os.path.exists(p)):
+            return []
+        raw = open(p, "r", encoding="utf-8").read()
+    except Exception:
+        return []
+
+    def _normalize_items(obj) -> list[dict]:
+        if obj is None:
+            return []
+        if isinstance(obj, dict):
+            obj = [obj]
+        if not isinstance(obj, list):
+            return []
+        out = []
+        for it in obj:
+            if not isinstance(it, dict):
+                continue
+            k = it.get("UNSPLASH_ACCESS_KEY") or it.get("unsplash_access_key") or it.get("access_key")
+            k = str(k or "").strip()
+            if not k:
+                continue
+            an = it.get("UNSPLASH_APP_NAME") or it.get("unsplash_app_name") or it.get("app_name")
+            an = str(an or "").strip()
+            if (not an) and default_app_name:
+                an = str(default_app_name or "").strip()
+            out.append({"UNSPLASH_ACCESS_KEY": k, "UNSPLASH_APP_NAME": an})
+        return out
+
+    try:
+        import json
+
+        return _normalize_items(json.loads(raw))
+    except Exception:
+        pass
+
+    try:
+        import json
+
+        s = str(raw or "").strip()
+        if not s:
+            return []
+        if s.startswith("{") and s.endswith("}"):
+            s = "[" + s[1:-1] + "]"
+        s = re.sub(r"(?m)\b(UNSPLASH_APP_NAME|UNSPLASH_ACCESS_KEY)\s*:", r'"\\1":', s)
+        s = re.sub(r",\s*([}\]])", r"\\1", s)
+        return _normalize_items(json.loads(s))
+    except Exception:
+        pass
+
+    try:
+        s = str(raw or "")
+        try:
+            blocks = re.findall(r"\{[^{}]*\}", s, flags=re.DOTALL)
+        except Exception:
+            blocks = []
+
+        out = []
+        for b in blocks or []:
+            try:
+                km = re.search(r"\bUNSPLASH_ACCESS_KEY\s*:\s*['\"]([^'\"]+)['\"]", b)
+                if not km:
+                    km = re.search(r"\bunsplash_access_key\s*:\s*['\"]([^'\"]+)['\"]", b)
+                if not km:
+                    km = re.search(r"\baccess_key\s*:\s*['\"]([^'\"]+)['\"]", b)
+                if not km:
+                    continue
+                k = str(km.group(1) or "").strip()
+                if not k:
+                    continue
+
+                am = re.search(r"\bUNSPLASH_APP_NAME\s*:\s*['\"]([^'\"]+)['\"]", b)
+                if not am:
+                    am = re.search(r"\bunsplash_app_name\s*:\s*['\"]([^'\"]+)['\"]", b)
+                if not am:
+                    am = re.search(r"\bapp_name\s*:\s*['\"]([^'\"]+)['\"]", b)
+                an = str(am.group(1) if am else "").strip() or str(default_app_name or "").strip()
+
+                out.append({"UNSPLASH_ACCESS_KEY": k, "UNSPLASH_APP_NAME": an})
+            except Exception:
+                continue
+
+        out = _normalize_items(out)
+        if out:
+            return out
+    except Exception:
+        pass
+
+    return []
 
 
 def _active_key_obj() -> dict | None:

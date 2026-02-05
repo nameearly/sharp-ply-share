@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from .progress import OrderedProgress
 from . import hf_sync
+from . import metrics
 from . import unsplash
 
 
@@ -56,6 +57,17 @@ class PipelineConfig:
     gaussians_dir: str
 
     sigint_window_s: float
+
+    hf_upload_batch_size: int
+    hf_upload_batch_wait_ms: int
+
+    pipeline_heartbeat_secs: float
+    stall_warn_secs: float
+
+    ant_enabled: bool
+    ant_candidate_ranges: int
+    ant_epsilon: float
+    ant_fresh_secs: float
 
 
 def _control_path(cfg: PipelineConfig, name: str) -> str:
@@ -154,6 +166,158 @@ def _log_exc(debug_fn, msg: str, e: BaseException | None = None) -> None:
         pass
 
 
+def _debug(debug_fn, msg: str) -> None:
+    try:
+        if debug_fn is not None:
+            debug_fn(str(msg))
+    except Exception:
+        pass
+
+
+def _build_unsplash_meta(details: dict, *, photo_id: str) -> dict:
+    try:
+        tags = [
+            (t.get("title") or "").strip()
+            for t in (details.get("tags") or [])
+            if isinstance(t, dict) and str((t.get("title") or "").strip())
+        ]
+        topics = [
+            (t.get("title") or "").strip()
+            for t in (details.get("topics") or [])
+            if isinstance(t, dict) and str((t.get("title") or "").strip())
+        ]
+        user = details.get("user") if isinstance(details.get("user"), dict) else {}
+        links = details.get("links") if isinstance(details.get("links"), dict) else {}
+        return {
+            "tags": tags,
+            "topics": topics,
+            "tags_text": ",".join(tags),
+            "topics_text": ",".join(topics),
+            "alt_description": details.get("alt_description"),
+            "description": details.get("description"),
+            "unsplash_id": str(photo_id),
+            "unsplash_url": (links or {}).get("html"),
+            "created_at": details.get("created_at"),
+            "user_username": user.get("username") if isinstance(user, dict) else None,
+            "user_name": user.get("name") if isinstance(user, dict) else None,
+        }
+    except Exception:
+        return {"unsplash_id": str(photo_id)}
+
+
+def _download_if_missing(download_location: str, out_path: str) -> bool:
+    try:
+        return True if os.path.exists(out_path) else bool(unsplash.download_image(download_location, out_path))
+    except Exception:
+        return False
+
+
+def _maybe_inject_focal_exif(
+    cfg: PipelineConfig,
+    *,
+    photo_id: str,
+    out_path: str,
+    details: dict,
+    local_has_focal_exif_fn,
+    inject_focal_exif_if_missing_fn,
+) -> None:
+    try:
+        if (not cfg.inject_exif) or (local_has_focal_exif_fn is None) or local_has_focal_exif_fn(out_path):
+            return
+        details_exif = details or unsplash.fetch_photo_details(photo_id)
+        focal_raw = ((details_exif or {}).get("exif") or {}).get("focal_length")
+        _a, _b, _c, focal_avg = unsplash.parse_focal_length(focal_raw)
+        if focal_avg is not None:
+            inject_focal_exif_if_missing_fn(out_path, focal_avg)
+    except Exception:
+        return
+
+
+def _enqueue_downloaded_image(
+    cfg: PipelineConfig,
+    *,
+    stop_event: threading.Event,
+    image_q: queue.Queue,
+    photo_id: str,
+    out_path: str,
+    meta: dict,
+) -> bool:
+    while (not stop_event.is_set()) and image_q.full():
+        if not gate(cfg, stop_event):
+            return False
+        idle_sleep(cfg)
+    if gate(cfg, stop_event):
+        image_q.put({"image_id": photo_id, "image_path": out_path, "meta": meta})
+        return True
+    return False
+
+
+def _cleanup_local_outputs(cfg: PipelineConfig, *, primary_path: str, debug_fn) -> None:
+    try:
+        ga = os.path.normcase(os.path.abspath(str(cfg.gaussians_dir)))
+        ap = os.path.normcase(os.path.abspath(str(primary_path)))
+
+        def _inside(p: str, root: str) -> bool:
+            try:
+                return os.path.commonpath([p, root]) == root
+            except Exception:
+                return False
+
+        def _rm(path: str, root: str):
+            try:
+                pp = os.path.normcase(os.path.abspath(str(path)))
+                rr = os.path.normcase(os.path.abspath(str(root)))
+                if _inside(pp, rr) and os.path.isfile(pp):
+                    os.remove(pp)
+            except Exception as e:
+                _log_exc(debug_fn, f"本地清理失败 | path={str(path)}", e)
+
+        _rm(ap, ga)
+
+        try:
+            base = os.path.splitext(os.path.basename(ap))[0]
+        except Exception:
+            base = ""
+        canon = str(base or "")
+        try:
+            changed = True
+            while canon and changed:
+                changed = False
+                for suf in (".small.gsplat", ".vertexonly.binary"):
+                    if canon.endswith(suf):
+                        canon = canon[: -len(suf)]
+                        changed = True
+        except Exception:
+            canon = str(base or "")
+
+        if canon:
+            for suf in (
+                ".spz",
+                ".vertexonly.binary.ply",
+                ".small.gsplat.ply",
+                ".small.gsplat.vertexonly.binary.ply",
+            ):
+                _rm(os.path.join(ga, canon + suf), ga)
+            try:
+                for p in glob.glob(os.path.join(ga, canon + ".small.gsplat.*.ply")):
+                    _rm(p, ga)
+            except Exception:
+                pass
+
+            try:
+                img_root = os.path.normcase(os.path.abspath(str(cfg.input_images_dir)))
+                save_root = os.path.normcase(os.path.abspath(str(cfg.save_dir)))
+                if not _inside(img_root, save_root):
+                    img_root = ""
+                for ext in (".jpg", ".jpeg"):
+                    if img_root:
+                        _rm(os.path.join(img_root, canon + ext), img_root)
+            except Exception:
+                pass
+    except Exception:
+        return
+
+
 def upload_worker(
     cfg: PipelineConfig,
     stop_event: threading.Event,
@@ -169,14 +333,13 @@ def upload_worker(
     debug_fn,
 ):
     try:
-        batch_size = int(str(os.getenv("HF_UPLOAD_BATCH_SIZE", "1") or "1").strip())
+        batch_size = int(getattr(cfg, "hf_upload_batch_size", 1))
     except Exception:
         batch_size = 1
     batch_size = max(1, min(int(batch_size), 64))
 
     try:
-        default_wait = "200" if batch_size > 1 else "0"
-        batch_wait_ms = int(str(os.getenv("HF_UPLOAD_BATCH_WAIT_MS", default_wait) or default_wait).strip())
+        batch_wait_ms = int(getattr(cfg, "hf_upload_batch_wait_ms", 0))
     except Exception:
         batch_wait_ms = 0
     batch_wait_ms = max(0, min(int(batch_wait_ms), 5000))
@@ -312,78 +475,7 @@ def upload_worker(
                         to_delete = None
 
                 if to_delete:
-                    try:
-                        ap = os.path.normcase(os.path.abspath(str(to_delete)))
-                        ga = os.path.normcase(os.path.abspath(str(cfg.gaussians_dir)))
-
-                        def _inside(p: str, root: str) -> bool:
-                            try:
-                                return os.path.commonpath([p, root]) == root
-                            except Exception:
-                                return False
-
-                        def _try_remove(p: str, root: str):
-                            try:
-                                pp = os.path.normcase(os.path.abspath(str(p)))
-                                rr = os.path.normcase(os.path.abspath(str(root)))
-                                if _inside(pp, rr) and os.path.isfile(pp):
-                                    os.remove(pp)
-                            except Exception as e:
-                                _log_exc(debug_fn, f"本地清理失败 | path={str(p)}", e)
-
-                        inside = False
-                        try:
-                            inside = os.path.commonpath([ap, ga]) == ga
-                        except Exception:
-                            inside = False
-                        if inside and os.path.isfile(ap):
-                            os.remove(ap)
-
-                        try:
-                            base = os.path.splitext(os.path.basename(ap))[0]
-                        except Exception:
-                            base = None
-
-                        canon = base
-                        try:
-                            if canon:
-                                changed = True
-                                while changed:
-                                    changed = False
-                                    for suf in [".small.gsplat", ".vertexonly.binary"]:
-                                        if canon.endswith(suf):
-                                            canon = canon[: -len(suf)]
-                                            changed = True
-                        except Exception:
-                            canon = base
-
-                        if canon:
-                            for suf in [
-                                ".spz",
-                                ".vertexonly.binary.ply",
-                                ".small.gsplat.ply",
-                                ".small.gsplat.vertexonly.binary.ply",
-                            ]:
-                                _try_remove(os.path.join(ga, canon + suf), ga)
-
-                            try:
-                                for p in glob.glob(os.path.join(ga, canon + ".small.gsplat.*.ply")):
-                                    _try_remove(p, ga)
-                            except Exception:
-                                pass
-
-                            try:
-                                img_root = os.path.normcase(os.path.abspath(str(cfg.input_images_dir)))
-                                save_root = os.path.normcase(os.path.abspath(str(cfg.save_dir)))
-                                if not _inside(img_root, save_root):
-                                    img_root = None
-                                for ext in [".jpg", ".jpeg"]:
-                                    if img_root:
-                                        _try_remove(os.path.join(img_root, canon + ext), img_root)
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
+                    _cleanup_local_outputs(cfg, primary_path=str(to_delete), debug_fn=debug_fn)
 
                 do_squash = False
                 with lock:
@@ -474,13 +566,17 @@ def predict_worker(
             image_id = item["image_id"]
             image_path = item["image_path"]
             meta = item.get("meta") if isinstance(item, dict) else None
+            started_ts = time.time()
             try:
-                if bool(getattr(run_sharp_predict_once_fn, "_skip_predict", False)):
-                    debug_fn(f"SKIP_PREDICT | id={image_id} | input={image_path}")
-                else:
-                    debug_fn(f"ml-sharp | id={image_id} | input={image_path}")
+                with lock:
+                    counters["predict_image_id"] = str(image_id)
+                    counters["predict_started_ts"] = float(started_ts)
             except Exception:
-                debug_fn(f"ml-sharp | id={image_id} | input={image_path}")
+                pass
+            _debug(
+                debug_fn,
+                f"{'SKIP_PREDICT' if bool(getattr(run_sharp_predict_once_fn, '_skip_predict', False)) else 'ml-sharp'} | id={image_id} | input={image_path}",
+            )
             try:
                 plys = run_sharp_predict_once_fn(image_path)
             except KeyboardInterrupt:
@@ -507,6 +603,23 @@ def predict_worker(
             except Exception as e:
                 _log_exc(debug_fn, f"predict 失败 | id={str(image_id)} | input={str(image_path)}", e)
                 plys = []
+            try:
+                took_s = max(0.0, float(time.time()) - float(started_ts))
+                _debug(debug_fn, f"predict done | id={image_id} | plys={int(len(plys or []))} | s={round(took_s, 2)}")
+            except Exception:
+                pass
+            try:
+                took_s = max(0.0, float(time.time()) - float(started_ts))
+                metrics.emit(
+                    "predict_done",
+                    debug_fn=debug_fn,
+                    image_id=str(image_id),
+                    plys=int(len(plys or [])),
+                    s=float(took_s),
+                    **metrics.snapshot(),
+                )
+            except Exception:
+                pass
             for ply_path in plys or []:
                 if not cfg.hf_upload:
                     continue
@@ -531,6 +644,8 @@ def predict_worker(
             try:
                 with lock:
                     counters["predict_inflight"] = max(0, int(counters.get("predict_inflight", 0)) - 1)
+                    counters["predict_image_id"] = ""
+                    counters["predict_started_ts"] = 0.0
             except Exception:
                 pass
             image_q.task_done()
@@ -561,17 +676,20 @@ def download_loop(
     active_range_acquired_ts = None
     last_range_meta_ts = 0.0
 
-    ant_enabled = str(os.getenv("ANT_ENABLED", "1") or "1").strip().lower() in ("1", "true", "yes", "y")
     try:
-        ant_candidates = int(str(os.getenv("ANT_CANDIDATE_RANGES", "6") or "6").strip())
+        ant_enabled = bool(getattr(cfg, "ant_enabled", True))
+    except Exception:
+        ant_enabled = True
+    try:
+        ant_candidates = int(getattr(cfg, "ant_candidate_ranges", 6))
     except Exception:
         ant_candidates = 6
     try:
-        ant_epsilon = float(str(os.getenv("ANT_EPSILON", "0.2") or "0.2").strip())
+        ant_epsilon = float(getattr(cfg, "ant_epsilon", 0.2))
     except Exception:
         ant_epsilon = 0.2
     try:
-        ant_fresh_secs = float(str(os.getenv("ANT_FRESH_SECS", "90") or "90").strip())
+        ant_fresh_secs = float(getattr(cfg, "ant_fresh_secs", 90.0))
     except Exception:
         ant_fresh_secs = 90.0
     ant_candidates = max(1, min(int(ant_candidates), 20))
@@ -582,6 +700,33 @@ def download_loop(
     ant_remote_done = 0
     ant_downloaded = 0
     ant_errors = 0
+
+    no_photos_streak = 0
+    last_no_photos_log_ts = 0.0
+
+    last_downloaded_log_ts = 0.0
+    no_download_streak = 0
+    skipped_checked = 0
+    skipped_remote_done = 0
+    skipped_locked = 0
+    skipped_details = 0
+
+    def _clear_active_range(*, abandoned_reason: str | None = None) -> None:
+        nonlocal active_range, active_range_end_page, range_progress, active_range_acquired_ts, active_range_start_page
+        try:
+            if abandoned_reason and (active_range is not None) and (range_coord is not None):
+                a, b = active_range
+                try:
+                    range_coord.mark_abandoned_range(int(a), int(b), str(abandoned_reason))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        active_range = None
+        active_range_start_page = None
+        active_range_end_page = None
+        range_progress = None
+        active_range_acquired_ts = None
 
     def _limit_reached(v: int, limit: int) -> bool:
         try:
@@ -595,44 +740,25 @@ def download_loop(
         except Exception:
             return True
 
-    while (not stop_event.is_set()) and (not _limit_reached(scanned, int(cfg.max_candidates))):
+    while (not stop_event.is_set()):
         order_is_oldest = False
         if not gate(cfg, stop_event):
             break
         if _limit_reached(downloaded_images, int(cfg.max_images)):
-            try:
-                if debug_fn:
-                    debug_fn(
-                        f"download_loop exit | reason=max_images | downloaded={int(downloaded_images)} max_images={int(cfg.max_images)} scanned={int(scanned)} max_candidates={int(cfg.max_candidates)}"
-                    )
-            except Exception:
-                pass
+            _debug(
+                debug_fn,
+                f"download_loop exit | reason=max_images | downloaded={int(downloaded_images)} max_images={int(cfg.max_images)} scanned={int(scanned)}",
+            )
             break
         if cfg.stop_on_rate_limit and unsplash.is_rate_limited():
-            try:
-                if (active_range is not None) and (range_coord is not None):
-                    a, b = active_range
-                    try:
-                        range_coord.mark_abandoned_range(int(a), int(b), "rate_limited_sleep")
-                    except Exception:
-                        pass
-                    active_range = None
-                    active_range_end_page = None
-                    range_progress = None
-                    active_range_acquired_ts = None
-            except Exception:
-                pass
+            _clear_active_range(abandoned_reason="rate_limited_sleep")
 
             wait_s = 3600.0
             try:
                 wait_s = float(unsplash.rate_limit_wait_s(3600.0))
             except Exception:
                 wait_s = 3600.0
-            try:
-                if debug_fn:
-                    debug_fn(f"Unsplash rate limited：睡眠 {int(wait_s)}s 后继续")
-            except Exception:
-                pass
+            _debug(debug_fn, f"Unsplash rate limited：睡眠 {int(wait_s)}s 后继续")
             end_ts = time.time() + max(1.0, float(wait_s))
             while time.time() < end_ts:
                 if not gate(cfg, stop_event):
@@ -793,11 +919,7 @@ def download_loop(
                             page = int(last_end_page or int(page)) + 1
                             continue
                     except Exception:
-                        active_range = None
-                        active_range_start_page = None
-                        active_range_end_page = None
-                        range_progress = None
-                        active_range_acquired_ts = None
+                        _clear_active_range()
 
             if order_is_oldest and (range_coord is not None) and (active_range is not None) and (active_range_end_page is not None) and (range_progress is not None):
                 try:
@@ -849,20 +971,30 @@ def download_loop(
             photos = unsplash.fetch_photos(query=query, page=page, order_by=order)
 
         if not photos:
+            no_photos_streak = int(no_photos_streak) + 1
+            try:
+                now = time.time()
+                if ((no_photos_streak in (1, 3, 10)) or ((now - float(last_no_photos_log_ts)) >= 60.0)):
+                    last_no_photos_log_ts = float(now)
+                    _debug(
+                        debug_fn,
+                        f"download_loop idle | reason=no_photos | source={str(cfg.source)} order={str(order)} query={str(locals().get('query', ''))} page={int(page)} streak={int(no_photos_streak)} rate_limited={int(unsplash.is_rate_limited())}",
+                    )
+            except Exception:
+                pass
             if str(cfg.source).strip().lower() == "list":
                 order_idx += 1
                 page = 1
-                active_range = None
-                active_range_end_page = None
-                range_progress = None
-                active_range_acquired_ts = None
+                _clear_active_range()
             else:
                 query_idx += 1
                 if query_idx % len(cfg.queries) == 0:
                     order_idx += 1
                 page = 1
-            time.sleep(1.0)
+            time.sleep(min(30.0, max(1.0, 1.0 + 0.5 * float(no_photos_streak))))
             continue
+
+        no_photos_streak = 0
 
         ordered_idxs = list(range(len(photos or [])))
         if order_is_oldest and (range_coord is not None) and (range_progress is not None):
@@ -879,11 +1011,11 @@ def download_loop(
             photo = (photos or [])[idx_in_page]
             if not gate(cfg, stop_event):
                 break
-            if _limit_reached(scanned, int(cfg.max_candidates)) or _limit_reached(downloaded_images, int(cfg.max_images)):
+            if _limit_reached(downloaded_images, int(cfg.max_images)):
                 try:
                     if debug_fn and _limit_reached(downloaded_images, int(cfg.max_images)):
                         debug_fn(
-                            f"download_loop stop in-page | reason=max_images | downloaded={int(downloaded_images)} max_images={int(cfg.max_images)} scanned={int(scanned)} max_candidates={int(cfg.max_candidates)} page={int(page)}"
+                            f"download_loop stop in-page | reason=max_images | downloaded={int(downloaded_images)} max_images={int(cfg.max_images)} scanned={int(scanned)} page={int(page)}"
                         )
                 except Exception:
                     pass
@@ -908,10 +1040,19 @@ def download_loop(
             try:
                 with lock:
                     if photo_id in checked_ids:
+                        skipped_checked += 1
                         continue
             except Exception:
                 if photo_id in checked_ids:
+                    skipped_checked += 1
                     continue
+
+            scanned += 1
+            try:
+                if (order_is_oldest and (range_coord is not None) and (active_range is not None)):
+                    ant_scanned = int(ant_scanned) + 1
+            except Exception:
+                pass
 
             if cfg.hf_repo_id:
                 remote_done = False
@@ -925,6 +1066,7 @@ def download_loop(
                 ):
                     remote_done = True
                 if remote_done:
+                    skipped_remote_done += 1
                     try:
                         if (order_is_oldest and (range_coord is not None) and (active_range is not None)):
                             ant_remote_done = int(ant_remote_done) + 1
@@ -954,6 +1096,7 @@ def download_loop(
                             extra = None
                     st, retry_after = coord.try_lock_status(photo_id, extra=extra)
                     if st != "acquired":
+                        skipped_locked += 1
                         if (range_progress is not None) and (photo_offset is not None):
                             try:
                                 if st == "locked_by_other" and retry_after is not None:
@@ -972,14 +1115,9 @@ def download_loop(
                         except Exception:
                             pass
 
-            scanned += 1
-            try:
-                if (order_is_oldest and (range_coord is not None) and (active_range is not None)):
-                    ant_scanned = int(ant_scanned) + 1
-            except Exception:
-                pass
             details = unsplash.fetch_photo_details(photo_id)
             if not details:
+                skipped_details += 1
                 try:
                     if (order_is_oldest and (range_coord is not None) and (active_range is not None)):
                         ant_errors = int(ant_errors) + 1
@@ -996,48 +1134,13 @@ def download_loop(
                     pass
                 continue
 
-            meta = {}
-            try:
-                tags = []
-                for t in (details.get('tags') or []):
-                    if isinstance(t, dict):
-                        tt = (t.get('title') or '').strip()
-                        if tt:
-                            tags.append(tt)
-                topics = []
-                for t in (details.get('topics') or []):
-                    if isinstance(t, dict):
-                        tt = (t.get('title') or '').strip()
-                        if tt:
-                            topics.append(tt)
-                alt_desc = details.get('alt_description')
-                desc = details.get('description')
-                user = details.get('user') if isinstance(details.get('user'), dict) else {}
-                meta = {
-                    "tags": tags,
-                    "topics": topics,
-                    "tags_text": ",".join(tags),
-                    "topics_text": ",".join(topics),
-                    "alt_description": alt_desc,
-                    "description": desc,
-                    "unsplash_id": photo_id,
-                    "unsplash_url": (details.get('links') or {}).get('html'),
-                    "created_at": details.get('created_at'),
-                    "user_username": user.get('username') if isinstance(user, dict) else None,
-                    "user_name": user.get('name') if isinstance(user, dict) else None,
-                }
-            except Exception:
-                meta = {"unsplash_id": photo_id}
+            meta = _build_unsplash_meta(details, photo_id=str(photo_id))
 
             if not os.path.exists(cfg.input_images_dir):
                 os.makedirs(cfg.input_images_dir, exist_ok=True)
             out_path = os.path.join(cfg.input_images_dir, f"{photo_id}.jpg")
 
-            ok = False
-            if not os.path.exists(out_path):
-                ok = unsplash.download_image(download_location, out_path)
-            else:
-                ok = True
+            ok = _download_if_missing(str(download_location), str(out_path))
             if not ok:
                 try:
                     if (order_is_oldest and (range_coord is not None) and (active_range is not None)):
@@ -1046,31 +1149,24 @@ def download_loop(
                     pass
                 continue
 
-            if cfg.inject_exif and (local_has_focal_exif_fn is not None) and (not local_has_focal_exif_fn(out_path)):
-                details_exif = details or unsplash.fetch_photo_details(photo_id)
-                if details_exif:
-                    focal_raw = (details_exif.get("exif") or {}).get("focal_length")
-                    _, _, _, focal_avg = unsplash.parse_focal_length(focal_raw)
-                    if focal_avg is not None:
-                        try:
-                            inject_focal_exif_if_missing_fn(out_path, focal_avg)
-                        except Exception:
-                            pass
+            _maybe_inject_focal_exif(
+                cfg,
+                photo_id=str(photo_id),
+                out_path=str(out_path),
+                details=details,
+                local_has_focal_exif_fn=local_has_focal_exif_fn,
+                inject_focal_exif_if_missing_fn=inject_focal_exif_if_missing_fn,
+            )
 
-            while (not stop_event.is_set()) and image_q.full():
-                if not gate(cfg, stop_event):
-                    break
-                idle_sleep(cfg)
-
-            if not gate(cfg, stop_event):
+            if not _enqueue_downloaded_image(
+                cfg,
+                stop_event=stop_event,
+                image_q=image_q,
+                photo_id=str(photo_id),
+                out_path=str(out_path),
+                meta=meta,
+            ):
                 break
-
-            image_q.put({"image_id": photo_id, "image_path": out_path, "meta": meta})
-            try:
-                with lock:
-                    checked_ids.add(photo_id)
-            except Exception:
-                pass
 
             downloaded_images += 1
             try:
@@ -1079,21 +1175,28 @@ def download_loop(
             except Exception:
                 pass
 
+        try:
+            now = time.time()
+            if downloaded_images <= 0:
+                no_download_streak = int(no_download_streak) + 1
+            if downloaded_images > 0:
+                no_download_streak = 0
+            if (now - float(last_downloaded_log_ts)) >= 60.0 and int(no_download_streak) >= 3:
+                last_downloaded_log_ts = float(now)
+                _debug(
+                    debug_fn,
+                    f"download_loop idle | reason=no_downloads | scanned={int(scanned)} downloaded={int(downloaded_images)} page={int(page)} skipped_checked={int(skipped_checked)} skipped_remote_done={int(skipped_remote_done)} skipped_locked={int(skipped_locked)} skipped_details={int(skipped_details)}",
+                )
+        except Exception:
+            pass
+
         page += 1
 
         if (active_range is not None) and (active_range_end_page is not None) and (range_coord is not None):
             try:
                 if int(page) > int(active_range_end_page):
                     if _limit_reached(downloaded_images, int(cfg.max_images)) or stop_event.is_set() or stop_requested(cfg):
-                        try:
-                            a, b = active_range
-                            range_coord.mark_abandoned_range(int(a), int(b), "stopped_or_max_images")
-                        except Exception:
-                            pass
-                        active_range = None
-                        active_range_end_page = None
-                        range_progress = None
-                        active_range_acquired_ts = None
+                        _clear_active_range(abandoned_reason="stopped_or_max_images")
                     else:
                         a, b = active_range
                         try:
@@ -1105,30 +1208,22 @@ def download_loop(
                         except Exception:
                             pass
                         range_coord.mark_done_range(int(a), int(b))
-                        active_range = None
-                        active_range_end_page = None
-                        range_progress = None
-                        active_range_acquired_ts = None
+                        _clear_active_range()
             except Exception:
-                active_range = None
-                active_range_end_page = None
-                range_progress = None
-                active_range_acquired_ts = None
+                _clear_active_range()
 
     try:
-        if debug_fn:
-            reason = "loop_exit"
-            if stop_event.is_set() or stop_requested(cfg):
-                reason = "stopped"
-            elif _limit_reached(downloaded_images, int(cfg.max_images)):
-                reason = "max_images"
-            elif _limit_reached(scanned, int(cfg.max_candidates)):
-                reason = "max_candidates"
-            elif cfg.stop_on_rate_limit and unsplash.is_rate_limited():
-                reason = "rate_limited"
-            debug_fn(
-                f"download_loop done | reason={str(reason)} | downloaded={int(downloaded_images)} scanned={int(scanned)} page={int(page)} max_images={int(cfg.max_images)} max_candidates={int(cfg.max_candidates)}"
-            )
+        reason = "loop_exit"
+        if stop_event.is_set() or stop_requested(cfg):
+            reason = "stopped"
+        elif _limit_reached(downloaded_images, int(cfg.max_images)):
+            reason = "max_images"
+        elif cfg.stop_on_rate_limit and unsplash.is_rate_limited():
+            reason = "rate_limited"
+        _debug(
+            debug_fn,
+            f"download_loop done | reason={str(reason)} | downloaded={int(downloaded_images)} scanned={int(scanned)} page={int(page)} max_images={int(cfg.max_images)}",
+        )
     except Exception:
         pass
     if (active_range is not None) and (range_coord is not None):
@@ -1137,8 +1232,6 @@ def download_loop(
             reason = "loop_exit"
             if _limit_reached(downloaded_images, int(cfg.max_images)):
                 reason = "max_images"
-            elif _limit_reached(scanned, int(cfg.max_candidates)):
-                reason = "max_candidates"
             elif stop_event.is_set() or stop_requested(cfg):
                 reason = "stopped"
             elif cfg.stop_on_rate_limit and unsplash.is_rate_limited():
@@ -1178,7 +1271,14 @@ def run(
 
     image_q = queue.Queue(maxsize=max(1, int(cfg.download_queue_max)))
     upload_q = queue.Queue(maxsize=max(1, int(cfg.upload_queue_max)))
-    counters = {"uploaded": 0, "keep_plys": deque(), "predict_inflight": 0, "upload_inflight": 0}
+    counters = {
+        "uploaded": 0,
+        "keep_plys": deque(),
+        "predict_inflight": 0,
+        "upload_inflight": 0,
+        "predict_image_id": "",
+        "predict_started_ts": 0.0,
+    }
     lock = threading.Lock()
 
     def _snapshot():
@@ -1186,9 +1286,13 @@ def run(
             with lock:
                 pi = int(counters.get("predict_inflight", 0))
                 ui = int(counters.get("upload_inflight", 0))
+                cur_pid = str(counters.get("predict_image_id", "") or "")
+                cur_pts = float(counters.get("predict_started_ts", 0.0) or 0.0)
         except Exception:
             pi = 0
             ui = 0
+            cur_pid = ""
+            cur_pts = 0.0
         try:
             iq = int(getattr(image_q, "qsize", lambda: -1)())
         except Exception:
@@ -1197,7 +1301,7 @@ def run(
             uq = int(getattr(upload_q, "qsize", lambda: -1)())
         except Exception:
             uq = -1
-        return iq, uq, pi, ui
+        return iq, uq, pi, ui, cur_pid, cur_pts
 
     def _request_stop(reason: str):
         try:
@@ -1207,47 +1311,89 @@ def run(
         stop_event.set()
         try:
             if debug_fn:
-                iq, uq, pi, ui = _snapshot()
+                iq, uq, pi, ui, cur_pid, cur_pts = _snapshot()
                 debug_fn(
-                    f"STOP requested | reason={str(reason)} | stop_file={_stop_file_path(cfg)} | pause_file={_pause_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
+                    f"STOP requested | reason={str(reason)} | stop_file={_stop_file_path(cfg)} | pause_file={_pause_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui} predict_id={cur_pid} predict_s={int(time.time()) - int(cur_pts)}"
                 )
         except Exception:
             pass
 
-    # Periodic heartbeat to make deadlocks/slowdowns visible.
     try:
-        hb_s = float(str(os.getenv("PIPELINE_HEARTBEAT_SECS", "10") or "10").strip())
+        hb_s = float(getattr(cfg, "pipeline_heartbeat_secs", 10.0))
     except Exception:
         hb_s = 10.0
     hb_s = max(1.0, float(hb_s))
 
     def _heartbeat_loop():
+        try:
+            stall_warn_s = float(getattr(cfg, "stall_warn_secs", 120.0))
+        except Exception:
+            stall_warn_s = 120.0
+        stall_warn_s = max(5.0, float(stall_warn_s))
+
         last_uploaded = -1
+        last_progress_ts = float(time.time())
+        last_work_sig = None
         while (not stop_event.is_set()) and (not stop_requested(cfg)):
             try:
                 if pause_requested(cfg):
                     time.sleep(max(0.5, hb_s))
                     continue
-                iq, uq, pi, ui = _snapshot()
+                iq, uq, pi, ui, cur_pid, cur_pts = _snapshot()
                 try:
                     with lock:
                         up = int(counters.get("uploaded", 0))
                 except Exception:
                     up = -1
+                now = float(time.time())
+                has_work = False
+                try:
+                    has_work = bool((iq > 0) or (uq > 0) or (pi > 0) or (ui > 0))
+                except Exception:
+                    has_work = False
+
+                work_sig = None
+                try:
+                    work_sig = (int(iq), int(uq), int(pi), int(ui), str(cur_pid or ""))
+                except Exception:
+                    work_sig = None
+
+                progressed = False
+                try:
+                    if last_uploaded >= 0 and up != last_uploaded:
+                        progressed = True
+                except Exception:
+                    pass
+                try:
+                    if last_work_sig is not None and work_sig is not None and work_sig != last_work_sig:
+                        progressed = True
+                except Exception:
+                    pass
+                if progressed:
+                    last_progress_ts = float(now)
+
                 stalled = ""
                 try:
-                    if last_uploaded >= 0 and up == last_uploaded and (iq > 0 or uq > 0 or pi > 0 or ui > 0):
+                    if has_work and (float(now) - float(last_progress_ts)) >= float(stall_warn_s):
                         stalled = " | stalled=1"
                 except Exception:
                     stalled = ""
+                pred_extra = ""
+                try:
+                    if cur_pid:
+                        age_s = max(0.0, float(time.time()) - float(cur_pts or 0.0)) if float(cur_pts or 0.0) > 0 else 0.0
+                        pred_extra = f" | predict_id={cur_pid} predict_s={int(age_s)}"
+                except Exception:
+                    pred_extra = ""
                 try:
                     if debug_fn:
                         debug_fn(
-                            f"HB | uploaded={up} image_q={iq} upload_q={uq} pi={pi} ui={ui} pause={int(pause_requested(cfg))} stop={int(stop_requested(cfg))}{stalled}"
+                            f"HB | uploaded={up} image_q={iq} upload_q={uq} pi={pi} ui={ui} pause={int(pause_requested(cfg))} stop={int(stop_requested(cfg))}{stalled}{pred_extra}"
                         )
                 except Exception:
                     pass
                 last_uploaded = up
+                last_work_sig = work_sig
             except Exception:
                 pass
             time.sleep(hb_s)
@@ -1257,42 +1403,15 @@ def run(
     except Exception:
         pass
 
-    prev_sigint_handler = None
-    prev_sigterm_handler = None
-    prev_sigbreak_handler = None
-    sigint_state = {"last": 0.0}
+    # Ctrl+C: stop.
     try:
+        import signal
+
         prev_sigint_handler = signal.getsignal(signal.SIGINT)
 
         def _on_sigint(_signum, _frame):
             try:
-                now = time.time()
-                paused = bool(pause_requested(cfg))
-                if paused:
-                    set_pause_file(cfg, False)
-                    try:
-                        if debug_fn:
-                            iq, uq, pi, ui = _snapshot()
-                            debug_fn(
-                                f"SIGINT: resume requested | pause_file={_pause_file_path(cfg)} | stop_file={_stop_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
-                            )
-                    except Exception:
-                        pass
-                else:
-                    prev = float(sigint_state.get("last") or 0.0)
-                    sigint_state["last"] = float(now)
-                    if prev > 0.0 and (now - prev) <= float(cfg.sigint_window_s or 2.0):
-                        _request_stop("SIGINT_DOUBLE")
-                    else:
-                        set_pause_file(cfg, True)
-                        try:
-                            if debug_fn:
-                                iq, uq, pi, ui = _snapshot()
-                                debug_fn(
-                                    f"SIGINT: pause requested | pause_file={_pause_file_path(cfg)} | stop_file={_stop_file_path(cfg)} | image_q={iq} upload_q={uq} pi={pi} ui={ui}"
-                                )
-                        except Exception:
-                            pass
+                _request_stop("SIGINT")
             except Exception:
                 _request_stop("sigint_handler_error")
 
@@ -1331,8 +1450,16 @@ def run(
                 try:
                     if msvcrt.kbhit():
                         ch = msvcrt.getwch()
-                        if ch in ("\x04", "\x1a"):
-                            _request_stop("CTRL_D")
+                        try:
+                            c2 = str(ch or "")
+                        except Exception:
+                            c2 = ""
+                        c2 = c2.lower()
+                        if c2 == "p":
+                            paused = bool(pause_requested(cfg))
+                            set_pause_file(cfg, (not paused))
+                        elif c2 == "q":
+                            _request_stop("KEY_Q")
                             break
                     time.sleep(0.1)
                 except Exception:
@@ -1373,8 +1500,6 @@ def run(
     )
     predict_t.start()
 
-    last_sigint_ts = 0.0
-
     try:
         while (not stop_event.is_set()) and (not stop_requested(cfg)):
             try:
@@ -1401,8 +1526,17 @@ def run(
                         pi = 0
                         ui = 0
 
-                    uploads_idle = (not cfg.hf_upload) or (upload_q.empty() and ui <= 0)
-                    if image_q.empty() and pi <= 0 and uploads_idle:
+                    try:
+                        iq = int(getattr(image_q, "qsize", lambda: -1)())
+                    except Exception:
+                        iq = -1
+                    try:
+                        uq = int(getattr(upload_q, "qsize", lambda: -1)())
+                    except Exception:
+                        uq = -1
+
+                    uploads_idle = (not cfg.hf_upload) or ((uq <= 0) and ui <= 0)
+                    if (iq <= 0) and pi <= 0 and uploads_idle:
                         return
                     idle_sleep(cfg)
                 return
