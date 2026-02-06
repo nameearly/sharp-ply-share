@@ -3,7 +3,11 @@ import os
 import random
 import threading
 import subprocess
+import time
+import re
+from urllib.parse import urlencode
 from typing import List, Dict, Optional, Any, Callable, Union
+from datetime import datetime
 
 import requests
 
@@ -265,9 +269,33 @@ def _trigger_auto_registration():
     """Trigger the external registration script and wait for it to finish."""
     global _IS_REGISTERING
     
-    # 检查是否允许自动化注册
-    if str(os.getenv("ALLOW_AUTO_REG", "0")).strip() != "1":
-        _d("[AUTO_REG] 未获得自动化注册许可，跳过。请设置 ALLOW_AUTO_REG=1")
+    # 检查是否允许自动化注册 - 增加从 .env 实时读取逻辑，并确保区分注释和实际值
+    allow_reg = str(os.getenv("ALLOW_AUTO_REG", "0")).strip()
+    if allow_reg != "1":
+        try:
+            env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+            if os.path.exists(env_path):
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if line.startswith("ALLOW_AUTO_REG=1"):
+                            allow_reg = "1"
+                            os.environ["ALLOW_AUTO_REG"] = "1"
+                            break
+                        if "=" in line:
+                            parts = line.split("=", 1)
+                            if parts[0].strip() == "ALLOW_AUTO_REG" and parts[1].strip() == "1":
+                                allow_reg = "1"
+                                os.environ["ALLOW_AUTO_REG"] = "1"
+                                break
+        except Exception:
+            pass
+
+    if allow_reg != "1":
+        # 调试信息：输出当前环境变量状态，帮助定位为什么没读到
+        _d(f"[AUTO_REG] 未获得许可 (ALLOW_AUTO_REG={os.getenv('ALLOW_AUTO_REG')})")
         return
 
     with _AUTO_REG_LOCK:
@@ -366,33 +394,33 @@ def _update_env_file(new_key: str):
 
 def _ensure_key_for_request() -> bool:
     global _rate_limited, _next_api_allowed_ts, _ACTIVE_KEY_IDX
+    now = time.time()
     try:
         if not _KEY_POOL:
             _rate_limited = True
-            _next_api_allowed_ts = time.time() + 3600.0
+            _next_api_allowed_ts = now + 3600.0
+            # 池子为空，触发注册
+            _trigger_auto_registration()
+            if _KEY_POOL:
+                # 注册成功后，递归调用一次以初始化状态
+                return _ensure_key_for_request()
             return False
-
-        now = time.time()
-        try:
-            cur = max(0, min(int(_ACTIVE_KEY_IDX), len(_KEY_POOL) - 1))
-        except Exception:
-            cur = 0
 
         def _ready(i: int) -> bool:
             try:
-                return float(_KEY_NEXT_API_ALLOWED_TS[i]) <= float(now)
+                return float(_KEY_NEXT_API_ALLOWED_TS[i]) <= now
             except Exception:
                 return True
 
+        # 1. 检查当前 Key 是否可用
+        cur = max(0, min(int(_ACTIVE_KEY_IDX), len(_KEY_POOL) - 1))
         if _ready(cur):
-            try:
-                _KEY_RATE_LIMITED[cur] = False
-            except Exception:
-                pass
+            _KEY_RATE_LIMITED[cur] = False
             _rate_limited = False
-            _next_api_allowed_ts = float(now)
+            _next_api_allowed_ts = now
             return True
 
+        # 2. 寻找池中其他可用的 Key
         best = None
         best_ts = None
         for i in range(len(_KEY_POOL)):
@@ -400,63 +428,57 @@ def _ensure_key_for_request() -> bool:
                 ts = float(_KEY_NEXT_API_ALLOWED_TS[i])
             except Exception:
                 ts = 0.0
-            
-            # 严格寻找可用的 Key
             if ts <= now:
                 best = i
                 best_ts = ts
-                # 找到可用的了，确保标志位正确
-                _KEY_RATE_LIMITED[i] = False
                 break
-            
             if best_ts is None or ts < best_ts:
                 best = i
                 best_ts = ts
 
-        # 核心修复：只有当确确实实找不到任何现在就能用的 Key 时，才考虑是否注册
-        if best is not None and best_ts > now:
-            # 只有当最快可用的 Key 还需要等待超过 10 分钟时，才考虑注册新 Key
-            if (best_ts - now) > 600.0:
-                _d(f"[AUTO_REG] 现有 Key 均被限速且需等待较长时间 ({(best_ts-now)/60:.1f}min)，准备尝试注册。")
-                best = None # 触发注册逻辑
-            else:
-                _d(f"Unsplash 所有 Key 均在冷却，最快可用需等待 {int(best_ts - now)}s")
-                # 确保全局标志反映这个等待状态
-                _rate_limited = True
-                _next_api_allowed_ts = best_ts
-                return False
-        elif best is None:
-            # Key 池为空，触发注册
-            pass
+        # 3. 如果找到了现在就能用的 Key
+        if best is not None and best_ts <= now:
+            _ACTIVE_KEY_IDX = best
+            _KEY_RATE_LIMITED[best] = False
+            _rate_limited = False
+            _next_api_allowed_ts = now
+            _KEY_API_BACKOFF_SECONDS[best] = 0.0
+            return True
 
-        if best is None:
+        # 4. 如果所有 Key 都不可用，判断是否触发自动注册
+        if best is not None:
+            wait_time = best_ts - now
+            # 降低触发阈值：只要所有 Key 都不可用，就立即触发自动注册
+            # 之前的 600s 阈值太保守，导致用户觉得系统没有按预期自动扩展
+            _d(f"[AUTO_REG] 现有 Key 均被限速 (需等待 {int(wait_time)}s)，触发自动注册新 Key...")
             _trigger_auto_registration()
-            # 注册后重新扫描一遍池子
-            now = time.time()
+            
+            # 注册后立即重新检查
+            now_after = time.time()
             for i in range(len(_KEY_POOL)):
-                if float(_KEY_NEXT_API_ALLOWED_TS[i]) <= now:
-                    best = i
+                try:
+                    ts_after = float(_KEY_NEXT_API_ALLOWED_TS[i])
+                except Exception:
+                    ts_after = 0.0
+                if ts_after <= now_after:
                     _ACTIVE_KEY_IDX = i
+                    _KEY_RATE_LIMITED[i] = False
                     _rate_limited = False
-                    _next_api_allowed_ts = now
+                    _next_api_allowed_ts = now_after
                     return True
             
-            # 如果注册失败或新 Key 也不可用
+            # 如果注册后的新 Key 也还没生效，或者注册失败，再进入短时间休眠
             _rate_limited = True
-            _next_api_allowed_ts = now + 3600.0
+            _next_api_allowed_ts = best_ts
             return False
 
-        # 成功找到可用 Key
-        _ACTIVE_KEY_IDX = best
-        _rate_limited = False
-        _next_api_allowed_ts = now
-        return True
-    except Exception:
-        _rate_limited = bool(_STOP_ON_RATE_LIMIT)
-        try:
-            _next_api_allowed_ts = time.time() + 3600.0
-        except Exception:
-            _next_api_allowed_ts = 0.0
+        # 兜底
+        _rate_limited = True
+        _next_api_allowed_ts = now + 3600.0
+        return False
+    except Exception as e:
+        _d(f"_ensure_key_for_request 发生异常: {e}")
+        _rate_limited = True
         return False
 
 

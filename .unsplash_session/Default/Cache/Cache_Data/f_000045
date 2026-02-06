@@ -1,0 +1,601 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Unsplash">
+<meta name="application-name" content="Unsplash">
+
+<title>
+    New API Application | Unsplash
+</title>
+
+<meta name="description" content="
+    Do-whatever-you-want free HD photos. Gifted by the world&#39;s most generous community of photographers.
+">
+<meta name="author" content="Unsplash">
+<meta name="csrf-param" content="authenticity_token" />
+<meta name="csrf-token" content="E1uGahNVTaReCHrj2pD64zhhLB07wgD60384B2aQhgjnhuipQZMHmUGqi48dzlccPWI8fU0a4tVnuqrIH_QG_A" />
+
+<link rel="stylesheet" href="https://unsplash.com/assets/application-8267b3c4205d2d742eaa1d32fd85fce3747c82fcb3ec3a7a1a672e1b0faf045d.css" media="all" />
+
+<script type="text/javascript" src="https://gc.kis.v2.scr.kaspersky-labs.com/FD126C42-EBFA-4E12-B309-BB3FDD723AC1/main.js?attr=tTjZYaUc7MMzST2XNxQHyBrS1egJnDL23i4AhhoFnHyMt_C5slZ3cpUOSGuXtLWkCvdxT2U-Bn8F7r17QAEONg" charset="UTF-8"></script><link rel="stylesheet" crossorigin="anonymous" href="https://gc.kis.v2.scr.kaspersky-labs.com/E3E8934C-235A-4B0E-825A-35A08381A191/abn/main.css?attr=aHR0cHM6Ly91bnNwbGFzaC5jb20vb2F1dGgvYXBwbGljYXRpb25zL25ldw"/><script>
+  window.__UNSPLASH__ = { consent: { tag: 'NotRequired' } };
+</script>
+<script
+  data-cookie-policy-href="/cookies"
+  data-manage-consent-href="/cookies#manage-consent"
+  data-class-name="consent-prompt"
+>
+  !function(){"use strict";const e=3456e4,t="consent_uid",o=e=>document.cookie.split("; ").find((t=>t.startsWith(`${e}=`)))?.split("=")?.[1],s=(e,t,o)=>{document.cookie=[[e,t],...void 0!==o?[["max-age",o.toString()]]:[],["path","/"]].map((e=>e.join("="))).join("; ")},n=(c=e=>JSON.parse(e),e=>void 0===e?void 0:c(e));var c;const a=(e,t)=>{try{return e()}catch(e){return t}},l=(n,c)=>{const a=o(t),l=a??crypto.randomUUID();void 0===a&&s(t,l,e);return((e,t)=>{const o=Date.now().toString(),s={schema:"iglu:com.snowplowanalytics.snowplow/payload_data/jsonschema/1-0-4",data:[{...void 0!==e.category&&{se_ca:e.category},...void 0!==e.action&&{se_ac:e.action},...void 0!==e.label&&{se_la:e.label},...void 0!==e.property&&{se_pr:e.property},...void 0!==e.value&&{se_va:e.value.toString()},e:"se",eid:crypto.randomUUID(),tna:t.name,tv:"fetch",p:"web",cs:"UTF-8",dtm:o,duid:t.domainUserId,url:window.location.href,stm:o}]};return fetch(t.url,{method:"POST",headers:{"Content-Type":"application/json"},referrerPolicy:"no-referrer",body:JSON.stringify(s)}).catch((e=>e))})({category:"consent",action:n,label:c?"granted":"denied"},{domainUserId:l,name:"web-fetch",url:"https://collector.unsplash.com/com.snowplowanalytics.snowplow/tp2"})};var i="styles-module_dialog__qMeos";const r=document.currentScript.dataset,d=r.cookiePolicyHref,_=r.manageConsentHref,u=r.className;(()=>{const c=o(t);void 0!==c&&s(t,c,e);if(a((()=>!0===n(o("require_cookie_consent"))),!1)){const e=a((()=>n(o("cookie_consent"))),void 0),t=(e,t)=>l(e,t).then((e=>{if(e instanceof Error){const t=e;return console.error("Failed to store consent",t),s("cookie_consent",(!1).toString()),!1}return s("cookie_consent",t.toString(),15552e3),t})),c=(e,o)=>t(e,o).then((()=>window.location.reload()));if("boolean"==typeof e)window.__UNSPLASH__={consent:{tag:"Obtained",value:e,setConsent:c}};else{const{promise:e,resolve:o}=(()=>{let e;return{promise:new Promise((t=>{e=t})),resolve:e}})();let s=!0;window.__UNSPLASH__={consent:{tag:"Pending",value:()=>e,setConsent:(e,n)=>s?(s=!1,t(e,n).then((e=>o(e)))):c(e,n)}}}}else window.__UNSPLASH__={consent:{tag:"NotRequired"}}})(),requestAnimationFrame((()=>((e,t,o)=>{const s=window.__UNSPLASH__.consent;if("Pending"===s.tag){const c=(e,t,...o)=>{const s=document.createElement(e);Object.assign(s,t);for(const e of o)s.appendChild("string"==typeof e?document.createTextNode(e):e);return s},a="http://www.w3.org/2000/svg",l=document.createElementNS(a,"path");l.setAttribute("d","M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41Z");const r=document.createElementNS(a,"desc");r.appendChild(document.createTextNode("A X shape"));const d=document.createElementNS(a,"svg");d.setAttribute("aria-hidden","false"),d.classList.add("styles-module_closeIcon__g8YH1"),d.setAttribute("width","32px"),d.setAttribute("height","32px"),d.setAttribute("version","1.1"),d.setAttribute("viewbox","0 0 24 24"),d.appendChild(r),d.appendChild(l);const _=c("button",{className:"styles-module_closeButton__hbqbL styles-module_resetBtn__rK1p9",title:"Close"},d),u=c("p",{className:"styles-module_content__IZ0A3",innerHTML:(n={link:t=>c("a",{href:e,innerText:t}).outerHTML},`Unsplash uses cookies and similar technologies to secure our site, provide useful features to free and paying users, and to ensure optimal performance. By clicking "Accept all cookies" or closing this prompt, you consent to the use of all cookies. By clicking "Accept essential only", you consent only to the use of cookies that are strictly necessary for the site to function. See our ${n.link("Cookie Policy")} for more info.`)}),m=c("a",{href:t},"Manage cookies"),p=c("button",{type:"button",className:"styles-module_objectButton__CGCdd styles-module_button__66CVU styles-module_outline__HamSs styles-module_baseWithShadow__MD3Pj styles-module_base__tbRd1 styles-module_resetBtn__rK1p9 styles-module_outlineInteractive__1affc styles-module_baseWithShadowInteractive__SeEXS styles-module_baseInteractive__7-73r styles-module_small__Ipy6s"},"Accept essential only"),y=c("button",{type:"button",autofocus:!0,className:"styles-module_consentButton__IDK22 styles-module_button__66CVU styles-module_primary__VnfNl styles-module_baseWithShadow__MD3Pj styles-module_base__tbRd1 styles-module_resetBtn__rK1p9 styles-module_primaryInteractive__aH-uc styles-module_baseWithShadowInteractive__SeEXS styles-module_baseInteractive__7-73r styles-module_small__Ipy6s"},"Accept all cookies"),h=c("div",{className:"styles-module_buttonContainer__LHjZk"},p,y),b=c("dialog",{className:[i,o].join(" ")},_,u,c("div",{className:"styles-module_spacer__99Qnu"}),m,h);document.body.insertBefore(b,document.body.childNodes[0]??null);const f=(e,t)=>()=>{s.setConsent(e,t),b.close()};y.addEventListener("click",f("accepted-cookie-consent",!0)),_.addEventListener("click",f("closed-cookie-consent",!0)),p.addEventListener("click",f("rejected-cookie-consent",!1)),b.show()}var n})(d,_,u)))}();
+
+</script>
+<style>
+  .styles-module_fontWeightMedium__8Gcvf{font-weight:500}.styles-module_resetBtn__rK1p9{background-color:transparent;border:none;font-weight:inherit;padding:0;text-align:inherit}.styles-module_small__Ipy6s{font-size:14px;font-weight:500;height:32px;line-height:30px;padding-inline:11px}.styles-module_base__tbRd1{fill:currentColor;border:1px solid transparent;border-radius:4px;display:inline-block;text-align:center;text-decoration:none;transition:all .1s ease-in-out;user-select:none;white-space:nowrap}button.styles-module_base__tbRd1[disabled]{background-color:#eee;border-color:transparent;color:#767676;cursor:not-allowed}.styles-module_baseWithShadow__MD3Pj{box-shadow:0 1px 1px rgba(0,0,0,.04)}.styles-module_baseWithShadowInteractive__SeEXS:hover{box-shadow:0 1px 2px rgba(0,0,0,.08)}.styles-module_primary__VnfNl{background-color:#111;color:#fff}.styles-module_primaryInteractive__aH-uc:hover{color:#fff}.styles-module_outline__HamSs{background-color:#fff;border-color:#d1d1d1;color:#767676}.styles-module_outlineInteractive__1affc:hover{border-color:#767676}.styles-module_outlineInteractive__1affc:focus,.styles-module_outlineInteractive__1affc:hover{color:#111}.styles-module_dialog__qMeos{border:unset;display:none;font-size:14px;margin:unset}.styles-module_dialog__qMeos[open]{display:block}@media (max-width:767px){.styles-module_dialog__qMeos{background-color:#f5f5f5;padding:12px;position:relative}}@media (min-width:768px){.styles-module_dialog__qMeos{background-color:#fff;border-radius:8px;bottom:20px;box-shadow:0 8px 16px 0 rgba(0,0,0,.16);left:auto;padding:24px;position:fixed;right:20px;width:480px;z-index:6}}.styles-module_closeButton__hbqbL{fill:#767676;align-items:center;display:flex;height:40px;justify-content:center;position:absolute;right:0;top:0;width:40px}.styles-module_closeButton__hbqbL:hover{fill:#111}.styles-module_closeIcon__g8YH1{height:24px;transition:fill .1s ease-in-out;width:24px}.styles-module_content__IZ0A3{margin-top:0}@media (min-width:768px){.styles-module_content__IZ0A3{padding-right:8px}}@media (max-width:767px){.styles-module_content__IZ0A3{padding-right:24px}}.styles-module_spacer__99Qnu{height:12px}.styles-module_buttonContainer__LHjZk{display:flex;flex-wrap:wrap;gap:8px}@media (max-width:767px){.styles-module_buttonContainer__LHjZk{margin-top:16px}}@media (min-width:768px){.styles-module_buttonContainer__LHjZk{margin-top:24px}}.styles-module_button__66CVU{flex-grow:1;min-width:calc(50% - 4px)}
+</style>
+
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="mask-icon" href="/safari-pinned-tab.svg" color="#000000">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+<link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
+
+
+<meta name="msapplication-config" content="browserconfig.xml">
+<meta name="msapplication-TileColor" content="#ffffff">
+<meta name="msapplication-TileImage" content="/mstile-144x144.png">
+<meta name="theme-color" content="#ffffff">
+
+
+
+</head>
+<body class="theme-api">
+
+
+<div class="js-flash-container"></div>
+
+<div class="offset-fixed-navbar  js-global-nav-offset"></div>
+
+<div class="navbar-container navbar-container--fixed">
+  
+
+  <div class="navbar flex flex-center js-global-nav">
+    <div class="flex-push">
+      <div class="navbar__logo-container flex flex-center">
+        <a href="/" title='Home &mdash; Unsplash'>
+          <img class="navbar__logo " src="https://unsplash.com/assets/core/logo-black-ddbdd505b663faadbc1e1731369f0929b2616886cb1d7fe11237c473bba02a50.svg" />
+        </a>
+        <a class="navbar__logo-text" href="/developers" title='Developers Home &mdash; Unsplash'>
+          Unsplash Developers
+        </a>
+      </div>
+    </div>
+
+    <ul class="flex flex-center" style="padding-left: 8px">
+        <li class="navbar__element navbar__element--heading ">
+          <a href="/oauth/applications">Your apps</a>
+        </li>
+
+      <!-- Mobile -->
+      <li class="navbar__element navbar__element--heading navbar__element--show-on-xs">
+        <div class="dropdown" style="margin-right: 12px;">
+          <a href="#" class="dropdown-toggle ellipsis-expander flex flex-center" id="admin-dropdown" data-toggle="dropdown">
+            <svg version="1.1" viewBox="0 0 32 32" width="32" height="32" aria-hidden="false">
+              <path d="M7 15.5c0 1.9-1.6 3.5-3.5 3.5s-3.5-1.6-3.5-3.5 1.6-3.5 3.5-3.5 3.5 1.6 3.5 3.5zm21.5-3.5c-1.9 0-3.5 1.6-3.5 3.5s1.6 3.5 3.5 3.5 3.5-1.6 3.5-3.5-1.6-3.5-3.5-3.5zm-12.5 0c-1.9 0-3.5 1.6-3.5 3.5s1.6 3.5 3.5 3.5 3.5-1.6 3.5-3.5-1.6-3.5-3.5-3.5z"></path>
+            </svg>
+          </a>
+
+          <ul class="dropdown-menu dropdown-menu-left">
+            <li>
+              <a href="/documentation">Documentation</a>
+            </li>
+            <li>
+              <a title="Check the status of the Unsplash API and Infrastructure" href="https://status.unsplash.com/">
+                API Status
+                <span class="api-status-dot js-api-status"></span>
+</a>            </li>
+            <li>
+              <a href="/data">Dataset</a>
+            </li>
+            <li>
+              <a href="https://unsplash.com/documentation/changelog">API Changelog</a>
+            </li>
+            <li>
+              <a href="/">Unsplash Home</a>
+            </li>
+          </ul>
+        </div>
+      </li>
+
+      <li class="navbar__element navbar__element--heading  hidden-xs">
+        <a href="/documentation">Documentation</a>
+      </li>
+
+      <li class="navbar__element navbar__element--heading  hidden-xs">
+        <a href="/data">Dataset</a>
+      </li>
+
+      <li class="navbar__element navbar__element--heading hidden-xs">
+        <a title="Check the status of the Unsplash API and Infrastructure" href="https://status.unsplash.com/">
+          API Status
+          <span class="api-status-dot js-api-status"></span>
+</a>      </li>
+
+      <li class="navbar__element navbar__element--heading hidden-xs">
+        <a href="https://unsplash.com/documentation/changelog">API Changelog</a>
+      </li>
+
+        <li class="navbar__element navbar__element--last-child">
+          <div class="dropdown">
+  <a href="#" class="dropdown-toggle dropdown-toggle-avatar block" id="user-dropdown" data-toggle="dropdown">
+    <img ix-src="https://images.unsplash.com/placeholder-avatars/extra-large.jpg?ixlib=rb-4.1.0&amp;crop=faces&amp;fit=crop&amp;w=32&amp;h=32" sizes="32px" class="avatar avatar--small">
+    <span class="sr-only">宬砚 杨</span>
+  </a>
+
+  <ul class="dropdown-menu dropdown-menu-right" style="margin-top: 10px; font-size: 14px; text-align: left">
+    <li>
+      <a href="/@q2741313455">
+        View profile
+</a>    </li>
+    <li>
+      <a href="/@q2741313455/stats" class="link--no-underline">Stats</a>
+    </li>
+    <li><a href="/account">Account settings</a></li>
+    <li>
+      <a class="btn-menu-item" rel="nofollow" data-method="post" href="/nlogout">
+        Logout @q2741313455
+</a>    </li>
+  </ul>
+</div>
+
+        </li>
+    </ul>
+  </div>
+</div>
+
+
+
+
+
+
+<div class="container">
+  <div class="row">
+    <div class="col-sm-10 col-md-8 center-block">
+      <div class="sheet sheet--padding sheet--padding-bottom-small api-app-header">
+        <div class="row">
+          <div class="col-sm-10">
+            <h4 class="alpha text-weight--bold">API Use and Guidelines</h4>
+          </div> <!-- close .col -->
+        </div> <!-- close .row -->
+      </div> <!-- close .sheet -->
+
+      <div class="sheet sheet--padding-bottom">
+        <form class="js-accept-api-terms-form">
+          <div class="form-group">
+            <div class="checkbox checkbox--with-helper">
+              <label for="terms_of_service_1">
+                <input type="checkbox" name="terms_of_service_1" id="terms_of_service_1" class="js-accept-api-required" />
+                The API is to be used for non-automated, high-quality, and authentic experiences.
+</label>              <div class="label__helper">
+                <a href="https://help.unsplash.com/api-guidelines/guideline-high-quality-authentic-experiences" class="link--no-underline">More info &amp; examples &nearr;</a>
+              </div>
+            </div> <!-- close .checkbox -->
+
+            <div class="checkbox checkbox--with-helper">
+              <label for="terms_of_service_2">
+                <input type="checkbox" name="terms_of_service_2" id="terms_of_service_2" class="js-accept-api-required" />
+                You cannot replicate the core user experience of Unsplash (unofficial clients, wallpaper applications, etc.).
+</label>              <div class="label__helper">
+                <a href="https://help.unsplash.com/api-guidelines/guideline-replicating-unsplash" class="link--no-underline">More info &amp; examples &nearr;</a>
+              </div>
+            </div> <!-- close .checkbox -->
+
+            <div class="checkbox">
+              <label for="terms_of_service_3">
+                <input type="checkbox" name="terms_of_service_3" id="terms_of_service_3" class="js-accept-api-required" />
+                Your Access Key and Secret Key must remain confidential.
+</label>            </div> <!-- close .checkbox -->
+
+            <div class="checkbox">
+              <label for="terms_of_service_4">
+                <input type="checkbox" name="terms_of_service_4" id="terms_of_service_4" class="js-accept-api-required" />
+                Do not abuse the API. Too many requests too quickly will get your access turned off.
+</label>            </div> <!-- close .checkbox -->
+          </div> <!-- close .form-group -->
+        </form>
+
+        <div class="api-app__terms-wrapper">
+            <div class="api-app__terms-outer form-control">
+              <div class="api-app__terms-scrollable">
+                <p>These Unsplash API Terms of Use (these “<strong>API</strong> <strong>Terms</strong>”) comprise a legal agreement between Unsplash Inc. (“<strong>Unsplash</strong>,” “<strong>us</strong>,” “<strong>we</strong>,” or “<strong>our</strong>”) and you, and describe the rules developers must follow when accessing or using the Unsplash application programming interfaces (the “<strong>APIs</strong>”) and related documentation made available by Unsplash through the Unsplash developer website currently located at <a href="https://unsplash.com/developers">https://unsplash.com/developers</a> (“<strong>Developer Site</strong>”). Any application that you own and that you integrate with the APIs is a “<strong>Developer App</strong>.”</p>
+
+<p>BY CLICKING “I AGREE” OR IMPLEMENTING OR OTHERWISE USING ANY UNSPLASH API, YOU ACKNOWLEDGE THAT YOU HAVE READ, UNDERSTAND AND AGREE TO BE BOUND BY THESE API TERMS.</p>
+
+<h2 id="1-your-relationship-with-unsplash">1. Your Relationship with Unsplash.</h2>
+
+<ul>
+  <li>
+    <p><strong>Legal Agreement</strong>. Your use of the APIs is subject to these API Terms. These API Terms, together with any other documents or terms incorporated into these API Terms or provided to you by Unsplash in connection with the APIs, are incorporated into the <a href="https://unsplash.com/terms">Unsplash Terms &amp; Conditions</a> (together with the <a href="https://unsplash.com/privacy">Unsplash Privacy Policy</a>, and <a href="https://help.unsplash.com/api-guidelines/unsplash-api-guidelines">Unsplash API Guidelines</a>, the “<strong>Policies</strong>”). If there is any contradiction between these API Terms and the other Policies, then these API Terms will take precedence with respect to the contradicting terms, but solely regarding your use of the APIs.</p>
+  </li>
+  <li>
+    <p><strong>Changes to the Terms</strong>. Unsplash reserves the right, at Unsplash’s discretion, to change these API Terms on a going-forward basis at any time by posting the amended API Terms to the Developer Site with reasonable advanced notice when possible. Please check these API Terms and any other Policies periodically for changes. In addition, if our modifications are material, we will make commercially reasonable efforts to notify you electronically. Your continued use of the APIs after new and/or revised API Terms are effective indicates that you have read, understood, and agreed to those API Terms. Your continued access to, or use of, the APIs following the effective date of any changes to the API Terms will signify your assent to and acceptance of such changes.</p>
+  </li>
+</ul>
+
+<h2 id="2-account-and-registration">2. Account and Registration</h2>
+
+<ul>
+  <li>
+    <p><strong>Organization</strong>. If you use the APIs on behalf of a business, you represent to Unsplash that you have the authority to bind that business and your acceptance of these API Terms will be treated as acceptance by that business. In that event, “you” and “your” will refer to that business in these API Terms.</p>
+  </li>
+  <li>
+    <p><strong>Registration</strong>. In order to access the APIs, you need to create a developer account and you will be required to provide certain information (such as identification or contact details) as part of the registration process, or as part of your continued access to or use of the APIs. You agree that any registration information you give to us will always be accurate and up to date and you will promptly make updates as needed. You may only access your account with the Client ID, access key, or other token (“<strong>Credentials</strong>”) provided to you by Unsplash and you will be fully responsible and liable for all activities that occur through the use of your Credentials. You must only access (or attempt to access) the APIs by the means described in these API Terms, including in accordance with the documentation for the specific APIs you access. You will not use the developer credentials assigned to a different individual or entity, or mask or misrepresent your identity when using the APIs or developer accounts. You may not share your Credentials with any third party. You may only link your API account with your Developer Apps, and not link your API account to any third-party products or services. Anyone who has had their access to any of the APIs suspended or terminated is prohibited from accessing, or attempting to access, the APIs via any means, including by creating or requesting, or using a proxy to create, new developer credentials or API credentials.</p>
+  </li>
+</ul>
+
+<h2 id="3-compliance-with-the-terms">3. Compliance with the Terms</h2>
+
+<p>You may access and use the APIs solely to develop and operate your Developer Apps, and only in accordance with these API Terms (including all applicable Policies). In accordance with Section 19 (Termination), Unsplash may suspend or terminate your (or your Developer App’s) access to, or use of, any aspect of the APIs without notice for non-compliance with these API Terms.</p>
+
+<h2 id="4-compliance-with-laws-and-third-party-rights">4. Compliance with Laws and Third-Party Rights</h2>
+
+<p>Your access to, and use of, the APIs will comply with, and you will require those acting on your behalf and your users to comply with (and not encourage, require, or enable them to violate), all applicable laws (including without limitation laws related to data privacy), rules and regulations, and all third-party rights. You and your Developer App will not use, or encourage, require, or enable others to use, the APIs in a manner that encourages or promotes illegal activity; is deceptive, unethical, false or misleading; or infringes or violates third-party rights, including intellectual property rights. You must not aggregate Content (as defined below) received via the APIs with any third-party content such that users of your Developer Apps cannot attribute the Content to Unsplash.</p>
+
+<h2 id="5-user-privacy-and-api-clients">5. User Privacy and API Clients</h2>
+
+<p>You will comply with all applicable data privacy laws and regulations, including those applying to personal data and, where applicable, the GDPR. You will provide and adhere to a published privacy policy for each of your Developer Apps that clearly and accurately describes to users of each Developer App what user information you collect, store and delete, and how you use, process, and share such information (including for advertising) with us and any third parties.</p>
+
+<h2 id="6-photo-interaction-data">6. Photo Interaction Data</h2>
+
+<p>In connection with any Photos that you access via the APIs, you must directly use or embed the related image URLs returned by the API in your Developer Apps (generally referred to as “hotlinking”) in accordance with the API Guidelines. Additionally, each time there is a download of a Photo or other comparable event (e.g., setting a Photo as background wallpaper) in your Developer Apps, you must provide us notice of the event in accordance with the API Guidelines. Failure to do any of the foregoing in this Section 6 will constitute a material breach of these API Terms. Unsplash may track user views, downloads, searches and likes of Photos within your Developer Apps via the image URLs or other technological means agreed between you and Unsplash to ensure the quality of and improve Unsplash products and services; perform research; and ensure compliance with these API Terms and applicable laws (“<strong>Photo Interaction Data</strong>”). Any tracking activity undertaken is via a random identifier that allows Unsplash to understand the approximate number of devices that produces the Photo Interaction Data. Unsplash does not link this identifier with any personal information other than Client IP address and Photo Interaction Data does not identify the user. Unsplash owns all Photo Interaction Data collected from use of your Developer Apps. Unsplash grants you a limited, non-exclusive, non-transferrable, royalty-free license to use Photo Interaction Data from each Developer App in connection with the operation and maintenance of that Developer App. You must not (a) transfer, sell, lease, license, sublicense, distribute, disclose, divulge, or make available the Photo Interaction Data (or any derived data or derivative product based on the Photo Interaction Data) to, or permit use of or access to the Photo Interaction Data (or any such derived data or derivative product) by, any person or entity other than your employees, (b) use the Photo Interaction Data to create, market, or distribute any product or service that is competitive with Unsplash’s products or services, (c) contest, challenge, or otherwise make any claim or take any action adverse to Unsplash’s ownership of, or interest in, the Photo Interaction Data, including the intellectual property rights therein, or (d) permit, procure, enable, or request any other person or entity to do any of the foregoing.</p>
+
+<h2 id="7-data-privacy">7. Data Privacy</h2>
+
+<p>You represent and warrant that you are authorized to process your data and make such data available to Unsplash for uses as set out in these API Terms and the Unsplash <a href="https://unsplash.com/privacy">Privacy Policy</a>, including through appropriate notice, disclosures, consent and by your referring individuals to the Unsplash Privacy Policy.</p>
+
+<p>Unless specifically agreed in writing between you and us, in relation to data, including personal data, that are subject to European Economic Area data protection rules, you acknowledge and agree that you act as an independent controller without prejudice to any use or licensing restriction or condition under the API Terms. You are solely responsible for ensuring that any contractual arrangements required by applicable law are in place, including with API developers, including any relevant data processing and transfer agreement (including where relevant appropriate standard contractual clauses) between you and Unsplash or any other party to which you provide personal data, and that we may freely deny or revoke access to the API if you do not do so. You represent and warrant that you are authorized by the applicable third parties to act on their behalf, and that your collection, storage and onward transfer to Unsplash of the personal data of any such third parties complies with all applicable data privacy laws and regulations.</p>
+
+<p>You agree that you must implement appropriate technical and organizational measures to protect the personal data against misuse, any unauthorized or unlawful processing, accidental loss, destruction, damage or theft.</p>
+
+<h2 id="8-photos">8. Photos</h2>
+
+<p>Subject to your compliance with these API Terms, all Photos that are made available through the APIs are provided pursuant to the <a href="https://unsplash.com/license">Unsplash License</a> and <a href="https://unsplash.com/terms">Unsplash Terms &amp; Conditions</a>, except that, if you receive Unsplash’s prior written consent, you additionally have the right to sublicense your rights to Photos that are made available to you through the APIs.</p>
+
+<h2 id="9-attribution">9. Attribution.</h2>
+
+<p>Notwithstanding anything in Unsplash License and Unsplash Terms &amp; Conditions to the contrary, each time you or your Developer App displays a Photo, your Developer App must attribute Unsplash, the Unsplash photographer, and contain a link back to the photographer’s Unsplash profile. Unsplash, and other Unsplash graphics, logos, designs, headers, button icons, scripts and service names are trademarks, registered trademarks, service marks or trade dress of Unsplash (“<strong>Unsplash Marks</strong>”). Subject to your full compliance with these API Terms and any other Trademark Guidelines made available by Unsplash to you, Unsplash hereby grants you a limited, personal, non-sublicenseable, non-transferable, nonexclusive, revocable license to use the Unsplash Marks in your Developer App. You may not:</p>
+
+<ul>
+  <li>
+    <p>use the Unsplash Marks in any manner that creates a false suggestion, either directly or indirectly, that your Developer App is sponsored by Unsplash</p>
+  </li>
+  <li>
+    <p>use or alter any text, logo, Unsplash Mark, Unsplash signature colors, or Unsplash layout, or</p>
+  </li>
+  <li>
+    <p>alter or use any Unsplash Mark in a misleading way, (d) use any Unsplash logo or Unsplash Mark in your Developer App in a more prominent manner than the logo or mark that primarily describes the Developer App. Unsplash has the right to do quality insurance inspections of your Developer App and withhold the right to use any Unsplash Mark if the quality is not satisfactory to Unsplash in its sole discretion.</p>
+  </li>
+</ul>
+
+<h2 id="10-proprietary-rights-notices">10. Proprietary Rights Notices</h2>
+
+<p>You agree that you will not remove, obscure, or alter any proprietary rights notices (including copyright and trademark notices or Terms of Service links) that may appear on, or be provided through, the APIs. You grant Unsplash a royalty-free license to reproduce and publicly display your company name, your Developer App name and/or logo for the purpose of promoting your Developer App and the API program on any website owned or controlled by or on behalf of Unsplash, within the Service, Unsplash’s social media channels, Unsplash’s internal corporate documents and presentations, and other related marketing materials and marketing collateral, whether online or offline, and through any medium and using any technology, whether now known or hereafter created, selected by Unsplash in its sole discretion.</p>
+
+<h2 id="11-changes-to-the-apis">11. Changes to the APIs</h2>
+
+<p>Unsplash may at any time change the specifications of or restrict or limit access to the APIs in Unsplash’s sole discretion, without any liability to you. Your right to access and use the APIs is a privilege, which may be revoked by Unsplash at any time, with or without notice. You acknowledge and agree that Unsplash may use any technological means to enforce these API Terms. Notwithstanding anything to the contrary, you hereby grant Unsplash the right to crawl, test, or otherwise monitor your Developer App, and that you will not block, attempt to block, or otherwise interfere with such crawling or monitoring.</p>
+
+<h2 id="12-usage-and-quotas">12. Usage and Quotas</h2>
+
+<p>Unsplash may set a quota on your (or your Developer App’s) usage of any APIs. You will not attempt to exceed or circumvent automated use or quota restrictions. Unsplash may specify additional requirements relating to automated use or quotas. Unsplash may also decide, in its sole discretion, to charge a technology fee to certain businesses, including businesses that heavily interact with the API or that Unsplash anticipates will heavily interact with the API. In such instances, Unsplash will reach out directly to you in writing to negotiate such fee and you understand and agree that your business’ use of the API is conditioned on payment of such technology fee. In the event you desire to use the Content sourced from the API in connection with any machine learning and/or artificial intelligence purposes, or for technologies designed or intended for the identification of natural persons, please visit <a href="https://unsplash.com/data">https://unsplash.com/data</a> for more information.</p>
+
+<h2 id="13-ownership-no-implied-rights">13. Ownership; No Implied Rights</h2>
+
+<p>Except as expressly granted herein, neither party through these API Terms grants the other party any intellectual property rights or other propriety rights. As between you and Unsplash, Unsplash and its applicable licensors retain all intellectual property rights (including all patent, trademark, copyright, trade secret, and other proprietary rights) in and to the APIs and its documentation and specifications, and the services provided hereunder. For the avoidance of doubt, you retain all rights in and to your Developer App, excluding any Unsplash materials and intellectual property. All license rights granted in these API Terms are not sublicensable, transferable or assignable unless otherwise stated in these API Terms.</p>
+
+<h2 id="14-non-exclusive">14. Non-exclusive</h2>
+
+<p>These API Terms constitute a non-exclusive agreement. You acknowledge that Unsplash may be developing, and may develop in the future, products or services that compete with the APIs, your Developer App, or any other products or services, and we have no obligation to make any of these products or services available to you.</p>
+
+<h2 id="15-indemnification">15. Indemnification</h2>
+
+<p>To the fullest extent permitted by law, you will indemnify and hold Unsplash, its affiliates, and any of their respective officers, directors, employees, agents, shareholders, licensors, licensees, assigns, or successors harmless against any claim, costs, losses, damages, liabilities, judgments, fees (including reasonable fees of attorneys and other professionals), and expenses arising out of or in connection with any claim, action or proceeding (any and all of which are “<strong>Claims</strong>”) by a third party arising out of:</p>
+
+<ul>
+  <li>
+    <p>access to, or use of, any APIs by you, those acting on your behalf, your Developer App, or any of your users</p>
+  </li>
+  <li>
+    <p>violation of these API Terms, or violation or infringement of any third-party right, including any intellectual property or other proprietary right, privacy right, or right of publicity, by you, those<br />
+acting on your behalf, your Developer Apps, or any of your users</p>
+  </li>
+  <li>
+    <p>the development, operation, maintenance, or use, of your Developer Apps, or</p>
+  </li>
+  <li>
+    <p>any content, data, technology or materials provided or contributed by you, those acting on your behalf, your Developer Apps, or any of your users. You must not settle any Claim without Unsplash’s prior written consent.</p>
+  </li>
+</ul>
+
+<h2 id="16-exclusion-of-warranties">16. Exclusion of Warranties.</h2>
+
+<p>TO THE FULLEST EXTENT PERMITTED BY LAW:</p>
+
+<ul>
+  <li>
+    <p>YOU EXPRESSLY UNDERSTAND AND AGREE THAT YOUR USE OF THE APIS AND ANY AND ALL PHOTOS IS AT YOUR SOLE RISK AND THAT THE APIS AND PHOTOS ARE PROVIDED “AS IS” AND “AS AVAILABLE.”</p>
+  </li>
+  <li>
+    <p>UNSPLASH, ITS AFFILIATES AND LICENSORS, AND THEIR SUPPLIERS, DO NOT REPRESENT OR WARRANT TO YOU THAT: (i) THE APIS WILL MEET YOUR REQUIREMENTS; (ii) THE APIS WILL BE UNINTERRUPTED, TIMELY, SECURE, OR ERROR-FREE; (iii) THE APIS WILL BE ACCURATE, RELIABLE, COMPLETE OR OTHERWISE VALID; OR (iv) DEFECTS IN THE OPERATION OR FUNCTIONALITY OF THE APIS, INCLUDING ANY SOFTWARE, CODE, CONTENT, DATA, SUPPORT OR ANYTHING ELSE PROVIDED TO YOU AS PART OF OR IN CONNECTION WITH THE APIS, WILL BE CORRECTED.</p>
+  </li>
+  <li>
+    <p>ANY PHOTOS OR OTHER CONTENT OR DATA OBTAINED THROUGH THE APIS IS AT YOUR OWN DISCRETION AND RISK AND YOU WILL BE SOLELY RESPONSIBLE FOR ANY DAMAGE TO YOUR OR YOUR USERS’ COMPUTER SYSTEM(S) OR DEVICE(S), LOSS OF DATA, OR ANY OTHER DAMAGE OR INJURY THAT RESULTS FROM ANY ASPECT OF THE APIS.</p>
+  </li>
+  <li>
+    <p>NO ADVICE OR INFORMATION, WHETHER ORAL OR WRITTEN, OBTAINED BY YOU FROM US, OR THROUGH OR FROM THE APIS, WILL CREATE ANY WARRANTY NOT EXPRESSLY STATED IN THESE API TERMS.</p>
+  </li>
+  <li>
+    <p>UNSPLASH, ITS AFFILIATES AND LICENSORS, AND THEIR SUPPLIERS FURTHER EXPRESSLY DISCLAIM ALL WARRANTIES AND CONDITIONS OF ANY KIND, WHETHER EXPRESS, IMPLIED OR STATUTORY, INCLUDING ANY IMPLIED WARRANTIES AND CONDITIONS OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.</p>
+  </li>
+</ul>
+
+<h2 id="17-disclaimer-for-third-party-content-websites-and-services">17. Disclaimer for Third Party Content, Websites and Services</h2>
+
+<ul>
+  <li>
+    <p>The content accessible through the APIs includes photos, graphics, text, and other materials, including music (collectively, “<strong>Content</strong>”). Such Content may come from a variety of sources and is the sole responsibility of the person or entity that submits the Content under the Unsplash Terms &amp; Conditions. We are a provider of hosting services for Content and are not responsible for the availability, accuracy, usefulness, safety, or legality of such Content, including Content that may be offensive, indecent, defamatory, objectionable, or that may violate third-party rights or applicable laws or regulations.</p>
+  </li>
+  <li>
+    <p>Additionally, the APIs may contain links to third-party websites and online services that are not owned or controlled by us. We have no control over, and assume no responsibility for, such websites or online services.</p>
+  </li>
+</ul>
+
+<h2 id="18-limitation-of-liability">18. Limitation of Liability</h2>
+
+<p>TO THE FULLEST EXTENT PERMITTED BY LAW, EACH OF UNSPLASH, ITS AFFILIATES AND LICENSORS, AND THEIR SUPPLIERS, IS NOT RESPONSIBLE FOR LOST PROFITS, REVENUES, OR DATA, FINANCIAL LOSSES OR INDIRECT, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION IN CONTRACT, TORT (INCLUDING NEGLIGENCE) OR OTHERWISE. IN ALL CASES, TO THE FULLEST EXTENT PERMITTED BY LAW, UNSPLASH WILL NOT BE LIABLE FOR ANY SUCH LOSS OR DAMAGE WHETHER OR NOT UNSPLASH, ITS AFFILIATES AND LICENSORS, OR THEIR SUPPLIERS HAVE BEEN ADVISED OF OR SHOULD HAVE BEEN AWARE OF THE POSSIBILITY OF ANY SUCH LOSSES OR DAMAGES. TO THE FULLEST EXTENT PERMITTED BY LAW, UNSPLASH’S TOTAL AGGREGATE LIABILITY UNDER OR ARISING OUT OF THE TERMS IS LIMITED TO THE GREATER OF: (I) THE FEES PAID BY YOU FOR THE APIS IN THE TWELVE MONTHS PRECEDING THE EVENT GIVING RISE TO LIABILITY; AND (II) $100.</p>
+
+<p>TO THE FULLEST EXTENT PERMITTED BY LAW, UNSPLASH IS NOT LIABLE FOR ANY DAMAGES THAT MAY RESULT FROM (I) REMOVING, MODIFYING, SUSPENDING OR TERMINATING ANY ASPECT OF THE APIS INCLUDING (A) ANY OR ALL FEATURES, FUNCTIONS, OR VERSIONS OF ANY OF THE APIS, INCLUDING DATA UNSPLASH MAKES AVAILABLE TO YOU OR ANY VIDEO CONTENT (IN WHOLE OR IN PART); AND (B) WITH RESPECT TO ANY SPECIFIC API USER OR DEVELOPER APP, CATEGORY OF USERS OR DEVELOPER APPS, OR ALL USERS, OR DEVELOPER APPS, OR (II) PROVIDING SUPPORT OR MODIFICATIONS TO THE APIS, INCLUDING WITH RESPECT TO ANY SPECIFIC API USER OR DEVELOPER APP, CATEGORY OF USERS OR DEVELOPER APPS, OR ALL USERS, OR DEVELOPER APPS.</p>
+
+<h2 id="19-termination">19. Termination</h2>
+
+<ul>
+  <li>
+    <p>Any rights granted to you in these API Terms will terminate automatically without notice if you fail to comply with any provision of these API Terms. Notwithstanding anything to the contrary, including under Section 11 (Changes to the APIs) of these API Terms (where applicable), we reserve the right to (i) suspend or terminate access to, or use of, any aspect of the APIs, and (ii) terminate these API Terms or any portion thereof, as applied to any specific user or Developer App, category of users or Developer Apps, or all users or Developer Apps at any time and without notice in our sole discretion and we will bear no liability for such decisions. If we elect to provide you with support or modifications for the APIs, this support or modification may be terminated at any time without notice to you. It is solely your responsibility at all times to be prepared to conduct your business and operate your Developer Apps without access to any aspect of the APIs. Upon any suspension, termination or notice of any discontinuance, you will immediately stop and thereafter desist from using all APIs. We are under no obligation to provide the APIs.</p>
+  </li>
+  <li>
+    <p>You may terminate these API Terms by discontinuing your and your Developer App’s use of and access to the APIs at any time. You do not need to specifically inform us when you stop using and accessing the APIs. Notwithstanding the foregoing, in the event that you have entered into an agreement with Unsplash requiring a technology fee for your use of the API, you understand and agree that you may not terminate such agreement for convenience under this Section.</p>
+  </li>
+  <li>
+    <p>The following Sections of these API Terms will continue to apply indefinitely even upon any termination or expiration of the Terms: 1, 6, 13, and 15 – 20.</p>
+  </li>
+</ul>
+
+<h2 id="20-general-legal-terms">20. General Legal Terms</h2>
+
+<ul>
+  <li>
+    <p>The API Terms, with the Policies, control the relationship between you and us and constitute the entire agreement between you and Unsplash with respect to the matters described in these API Terms. We may deny or grant in our sole discretion for any or no reason any consents, approvals, or permissions that are expressly contemplated under these API Terms or otherwise requested by you. Any dispute arising under these API Terms will be resolved pursuant to the Governing Law, Dispute Resolution and Arbitration section of the Unsplash Terms &amp; Conditions. These API Terms and any arbitration arising from disputes under these API Terms will be subject to the Choice of Law and Forum section of the Unsplash Terms &amp; Conditions. TO THE FULLEST EXTENT PERMITTED BY LAW, YOU AND UNSPLASH AGREE THAT ANY CAUSE OF ACTION ARISING OUT OF OR RELATED TO THE APIS MUST COMMENCE WITHIN ONE YEAR AFTER THE CAUSE OF ACTION ACCRUES. OTHERWISE, SUCH CAUSE OF ACTION IS PERMANENTLY BARRED.</p>
+  </li>
+  <li>
+    <p>Except as stated in Section 15, these API Terms create no third-party beneficiary rights. A party’s failure to enforce a provision is not a waiver of its right to do so later. If a provision is found unenforceable, then the remaining provisions of these API Terms will remain in full effect and an enforceable term will be substituted reflecting our intent as closely as possible. You may not assign any of your rights in these API Terms, and any such attempt is void, but Unsplash may assign its rights to any of its affiliates or subsidiaries, or to any successor in interest of any business associated with the APIs. Unsplash and you are not legal partners or agents; instead, our relationship is that of independent contractors.</p>
+  </li>
+</ul>
+
+              </div>
+              <div class="api-app__terms-fade"></div>
+            </div>
+
+          <div class="btn-group--inline">
+            <a class="btn btn-outline" href="/oauth/applications">Decline</a>
+            <button type="button" data-toggle="modal" data-target="#createApplication" class="btn btn-default js-accept-api-terms-button">
+              Accept terms
+            </button>
+          </div>
+        </div> <!-- close .api-app__terms-wrapper -->
+      </div> <!-- close .sheet -->
+    </div> <!-- close .col -->
+  </div> <!-- close .row -->
+</div> <!-- close .container -->
+
+<div class="modal fade" id="createApplication" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <button class="modal-close" aria-hidden="true" data-dismiss="modal">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="icon">
+  <path d="M19 6.4L17.6 5 12 10.6 6.4 5 5 6.4l5.6 5.6L5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4z"></path>
+</svg>
+
+      </button>
+      <div class="modal-body qa-api-new-application-info">
+        <form data-form-disable-until-changes="true" class="new_doorkeeper_application" id="new_doorkeeper_application" action="/oauth/applications" accept-charset="UTF-8" method="post"><input name="utf8" type="hidden" value="&#x2713;" autocomplete="off" /><input type="hidden" name="authenticity_token" value="NvBxUHWrlWM1N1JIb2leGonxV74y5ii5yHmmaIr4hQjCLR-TJ23fXiqVoySoN_PljPJH3kQ-ypZ8vDSn85wF_A" autocomplete="off" />
+  <div class="api-app-info-card__title-container flex flex-wrap">
+    <h5 class="api-app-info-card__title gamma">
+      <span class="api-app-info-card__title-emoji">📝</span> Application information
+    </h5>
+  </div>
+
+
+  <div class="flex flex-column">
+    <div class="form-group">
+      <label class="control-label" for="doorkeeper_application_name">
+        Application name
+</label>
+      <input class="form-control js-api-application-name-field" placeholder="Application name" required="required" type="text" name="doorkeeper_application[name]" id="doorkeeper_application_name" />
+      
+
+      <div class="form-error-inline hide js-api-application-name-warning-for-wallpapers">
+  Warning: wallpaper applications are not allowed under the <a href="https://help.unsplash.com/api-guidelines/guideline-replicating-unsplash">Unsplash API guidelines</a>.
+</div>
+
+<div class="form-error-inline hide js-api-application-name-warning-for-test-app">
+  Warning: please use an accurate and descriptive name (i.e. avoid names like 'Test app').
+</div>
+
+</div>
+    <div class="form-group">
+      <label class="control-label" for="doorkeeper_application_description">Description</label>
+      <textarea class="form-control" placeholder="Describe your application" rows="5" required="required" name="doorkeeper_application[description]" id="doorkeeper_application_description">
+</textarea>
+</div>
+    <div class="btn-group--inline btn-group--inline-end">
+      <button class="btn btn-outline" data-dismiss="modal">
+        Cancel
+      </button>
+      <input type="submit" name="commit" value="Create application" class="btn btn-default" data-disable-with="···" data-form-disable-button="true" />
+    </div>
+  </div>
+</form>
+      </div>
+    </div>
+  </div>
+</div> <!-- .modal -->
+
+
+
+
+
+  <script>
+    (function (window) {
+      var currentUser = {
+        id: 19115187
+      };
+
+      // attach any properties needed
+      // 
+      // ex:
+      // 
+      // currentUser.fullName = '宬砚 杨';
+
+      window.currentUser = currentUser;
+    })(window);
+  </script>
+
+<script src="https://unsplash.com/assets/global-acc316b6070f41dd678aa9d219035af22d39047eb0c0aca67d9d7fbef3610ecc.js"></script>
+<script src="https://unsplash.com/assets/api-fdb04b97ebeccbfe9a4d458397333b0d3b2be5bcc087a2eda50ba601f6ed928a.js"></script>
+  <script src="https://cdn.statuspage.io/se-v2.js"></script>
+  <script>
+    $(function () {
+      if (typeof(StatusPage) != "undefined") {
+        // Updates the API StatusPage badge
+        var sp = new StatusPage.page({ page: window.publicKeys.statusPage });
+
+        sp.summary({
+          success: function(data) {
+            $('.js-api-status').addClass(data.status.indicator);
+          }
+        });
+      }
+    });
+  </script>
+
+
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-21SLH4J369"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  (function () {
+
+    const cookieDomain = ".unsplash.com";
+
+    const deleteCookie = (name) => {
+      document.cookie = `${name}=; max-age=0; domain=${cookieDomain}; path=/`;
+    };
+
+    const unsplashConsent = window.__UNSPLASH__.consent;
+    const canSetCookie =
+      (unsplashConsent.tag === 'Obtained' && unsplashConsent.value) ||
+      unsplashConsent.tag === 'NotRequired';
+
+    if (canSetCookie === false) {
+      // We manually remove cookies set by Google Analytics 4 if consent is pending
+      // or if it has been denied because denying consent doesn't delete them.
+      // https://support.google.com/analytics/answer/11397207?hl=en
+      deleteCookie('_ga');
+      deleteCookie(`_ga_21SLH4J369`);
+    }
+
+    const defaultConsent = canSetCookie ? 'granted' : 'denied';
+    gtag('consent', 'default', {
+      ad_storage: defaultConsent,
+      analytics_storage: defaultConsent,
+      functionality_storage: 'denied',
+      personalization_storage: 'denied',
+      security_storage: 'denied',
+    });
+
+    gtag('config', 'G-21SLH4J369', {
+      cookie_domain: cookieDomain,
+    });
+    if (unsplashConsent.tag === 'Pending') {
+      void unsplashConsent.value().then(function (consented) {
+        if (consented) {
+          gtag('consent', 'update', {
+            ad_storage: 'granted',
+            analytics_storage: 'granted',
+          });
+        }
+      });
+    }
+  })();
+</script>
+
+
+
+  <script>
+    ;(function(p,l,o,w,i,n,g){if(!p[i]){p.GlobalSnowplowNamespace=p.GlobalSnowplowNamespace||[];
+    p.GlobalSnowplowNamespace.push(i);p[i]=function(){(p[i].q=p[i].q||[]).push(arguments)
+    };p[i].q=p[i].q||[];n=l.createElement(o);g=l.getElementsByTagName(o)[0];n.async=1;
+    n.src=w;g.parentNode.insertBefore(n,g)}}(window,document,"script",'//cdn.jsdelivr.net/gh/snowplow/sp-js-assets@2.18.1/sp.js','snowplow'));
+
+    (function () {
+      const unsplashConsent = window.__UNSPLASH__.consent;
+      const hasConsent =
+        (unsplashConsent.tag === 'Obtained' && unsplashConsent.value) ||
+          unsplashConsent.tag === 'NotRequired';
+
+      const configuration = Object.assign(
+        {
+          platform: 'web',
+          cookieDomain: '.unsplash.com',
+        },
+        !hasConsent && {
+          anonymousTracking: true,
+          stateStorageStrategy: 'none'
+        },
+      );
+
+      window.snowplow('newTracker', 'sn-unsp-0', 'collector.unsplash.com', configuration);
+
+      function enableNonAnonymousTracking() {
+        window.snowplow('disableAnonymousTracking', 'cookieAndLocalStorage');
+        if (typeof currentUser === 'object') {
+          window.snowplow('setUserId', currentUser.id);
+        }
+      }
+
+      if (!hasConsent) {
+        window.snowplow('clearUserData');
+        if (unsplashConsent.tag === 'Pending') {
+          unsplashConsent.value().then(function (consented) {
+            if (consented) {
+              enableNonAnonymousTracking();
+            }
+          });
+        }
+      } else {
+        enableNonAnonymousTracking();
+      }
+
+      window.snowplow('enableActivityTracking', 10, 30);
+      window.snowplow('trackPageView');
+    })();
+  </script>
+
+
+</body>
+</html>

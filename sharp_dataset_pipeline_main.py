@@ -700,6 +700,53 @@ def run_pipeline():
     # --- Onboarding: Unsplash Key Guidance ---
     unsplash_keys_raw = os.getenv("UNSPLASH_API_KEYS", "").strip()
     single_key = os.getenv("UNSPLASH_ACCESS_KEY", "").strip()
+    allow_auto_reg = os.getenv("ALLOW_AUTO_REG")
+
+    if allow_auto_reg is None or str(allow_auto_reg).strip() == "":
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        env_lines = []
+        try:
+            if os.path.exists(env_path):
+                with open(env_path, "r", encoding="utf-8") as f:
+                    env_lines = f.readlines()
+        except Exception:
+            env_lines = []
+
+        env_allow = None
+        try:
+            for line in env_lines:
+                s = str(line or "").strip()
+                if not s or s.startswith("#"):
+                    continue
+                if s.startswith("ALLOW_AUTO_REG="):
+                    env_allow = s.split("=", 1)[1].strip()
+                    break
+        except Exception:
+            env_allow = None
+
+        if env_allow in ("0", "1"):
+            os.environ["ALLOW_AUTO_REG"] = str(env_allow)
+        else:
+            choice = input("是否允许系统在 Key 耗尽时自动为您注册新应用并获取 Key? (y/n, 默认 n): ").strip().lower()
+            val = "1" if choice == "y" else "0"
+            os.environ["ALLOW_AUTO_REG"] = val
+            try:
+                found = False
+                new_lines = []
+                for line in env_lines:
+                    if str(line).strip().startswith("ALLOW_AUTO_REG="):
+                        new_lines.append(f"ALLOW_AUTO_REG={val}\n")
+                        found = True
+                    else:
+                        new_lines.append(line)
+                if not found:
+                    if new_lines and not str(new_lines[-1]).endswith("\n"):
+                        new_lines[-1] = str(new_lines[-1]) + "\n"
+                    new_lines.append(f"ALLOW_AUTO_REG={val}\n")
+                with open(env_path, "w", encoding="utf-8") as f:
+                    f.writelines(new_lines)
+            except Exception:
+                pass
     
     if not unsplash_keys_raw and not single_key:
         print("\n" + "="*60)
@@ -713,6 +760,35 @@ def run_pipeline():
         choice = input("是否允许系统在 Key 耗尽时自动为您注册新应用并获取 Key? (y/n, 默认 n): ").strip().lower()
         if choice == 'y':
             os.environ["ALLOW_AUTO_REG"] = "1"
+            # 同时更新 .env 文件，确保持久化
+            try:
+                env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+                lines = []
+                if os.path.exists(env_path):
+                    with open(env_path, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                
+                # 检查是否已存在，如果存在则更新，否则追加
+                found = False
+                new_lines = []
+                for line in lines:
+                    if line.strip().startswith("ALLOW_AUTO_REG="):
+                        new_lines.append("ALLOW_AUTO_REG=1\n")
+                        found = True
+                    else:
+                        new_lines.append(line)
+                
+                if not found:
+                    if new_lines and not new_lines[-1].endswith("\n"):
+                        new_lines[-1] += "\n"
+                    new_lines.append("ALLOW_AUTO_REG=1\n")
+                
+                with open(env_path, "w", encoding="utf-8") as f:
+                    f.writelines(new_lines)
+                print("[INFO] 已将 ALLOW_AUTO_REG=1 写入 .env 文件")
+            except Exception as e:
+                print(f"[ERROR] 写入 .env 失败: {e}")
+            
             # 尝试立即注册第一个 Key
             print("正在尝试为您自动注册第一个 Unsplash Key...")
             try:
