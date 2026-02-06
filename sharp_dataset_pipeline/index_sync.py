@@ -4,6 +4,7 @@ import shutil
 import threading
 import time
 from urllib.parse import urlparse
+from typing import List, Dict, Optional, Any, Callable, Union, Set
 
 from . import hf_utils
 

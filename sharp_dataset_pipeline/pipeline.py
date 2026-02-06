@@ -16,6 +16,9 @@ from . import hf_sync
 from . import hf_upload
 from . import metrics
 from . import unsplash
+from . import index_sync as hf_index_sync
+
+from .index_sync import IndexSync
 
 
 @dataclass
@@ -150,6 +153,17 @@ def gate(cfg: PipelineConfig, stop_event: threading.Event) -> bool:
     if stop_event.is_set() or stop_requested(cfg):
         return False
     return True
+
+
+def _wait_for_api_slot() -> None:
+    """Wait for a free slot in the Unsplash API rate limit."""
+    try:
+        if unsplash.is_rate_limited():
+            wait_s = unsplash.rate_limit_wait_s(30.0)
+            if wait_s > 0:
+                time.sleep(float(wait_s))
+    except Exception:
+        time.sleep(1.0)
 
 
 def _log_exc(debug_fn: Optional[Callable[[str], None]], msg: str, e: Optional[BaseException] = None) -> None:
@@ -639,8 +653,9 @@ def predict_worker(
     upload_q: queue.Queue,
     counters: dict,
     lock: threading.Lock,
-    run_sharp_predict_once_fn,
-    debug_fn,
+    run_sharp_predict_once_fn: Callable,
+    index_sync: Optional[hf_index_sync.IndexSync],
+    debug_fn: Optional[Callable[[str], None]],
 ):
     while not stop_event.is_set():
         wait_if_paused(cfg, stop_event)
@@ -1391,7 +1406,6 @@ def download_loop(
 
 
 def run(
-    self,
     cfg: PipelineConfig,
     *,
     checked_ids: Set[str],
@@ -1661,7 +1675,7 @@ def run(
 
     predict_t = threading.Thread(
         target=predict_worker,
-        args=(cfg, stop_event, image_q, upload_q, counters, lock, run_sharp_predict_once_fn, debug_fn),
+        args=(cfg, stop_event, image_q, upload_q, counters, lock, run_sharp_predict_once_fn, index_sync, debug_fn),
         daemon=True,
     )
     predict_t.start()
