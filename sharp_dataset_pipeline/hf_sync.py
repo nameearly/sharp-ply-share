@@ -185,35 +185,26 @@ def _hf_try_read_json(repo_id: str, repo_path: str):
         return None
 
 
-def _hf_try_write_json(repo_id: str, repo_path: str, payload_obj: dict, commit_message: str) -> bool:
-    if (not _HF_UPLOAD) or (not repo_id) or (not repo_path):
-        return False
+def _hf_try_write_json(repo_id: str, repo_path: str, obj: dict, msg: str) -> bool:
     try:
-        from huggingface_hub import CommitOperationAdd, HfApi
+        from huggingface_hub import HfApi, CommitOperationAdd
+        import io
+        import json
 
         api = HfApi()
-        blob = (json.dumps(payload_obj, ensure_ascii=False) + "\n").encode('utf-8')
-        ops = [CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=io.BytesIO(blob))]
-        try:
-            api.create_commit(
-                repo_id=repo_id,
-                repo_type=_HF_REPO_TYPE,
-                operations=ops,
-                commit_message=str(commit_message or 'range meta update'),
-            )
-        except Exception as e:
-            if not _hf_should_retry_with_pr(e):
-                raise
-            api.create_commit(
-                repo_id=repo_id,
-                repo_type=_HF_REPO_TYPE,
-                operations=ops,
-                commit_message=str(commit_message or 'range meta update'),
-                create_pr=True,
-            )
+        payload = json.dumps(obj, indent=2, ensure_ascii=False).encode("utf-8")
+        op = CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=io.BytesIO(payload))
+        
+        # Centralized commit with robust retry and rate limit handling
+        _hf_create_commit_retry(
+            api,
+            repo_id=repo_id,
+            operations=[op],
+            commit_message=f"update {msg}",
+        )
         return True
     except Exception as e:
-        _d(f"HF range meta 写入失败（可忽略） | err={str(e)}")
+        _d(f"HF JSON 写入失败 | msg={msg} | err={str(e)}")
         return False
 
 
@@ -911,28 +902,57 @@ class LocalLockDoneSync:
         return
 
 
+_hf_commit_blocked_until = 0.0
+_hf_commit_blocked_lock = threading.Lock()
+
 def _hf_is_rate_limited(err: Exception) -> tuple[bool, float | None]:
     try:
         s = str(err).lower()
     except Exception:
         s = ""
-    if ("429" not in s) and ("too many requests" not in s):
+    # "api rate limit" is for general REST API (1000 per 5 mins)
+    # "repository commits" is for Git/Commit operations (128 per hour)
+    if ("429" not in s) and ("too many requests" not in s) and ("rate limit" not in s):
         return (False, None)
+    
     if "repository commits" in s or "128 per hour" in s:
-        return (True, 3600.0)
+        # Commit limit is strict: 128/hour. 
+        # If we hit it, we should back off significantly and mark as blocked.
+        wait_s = 3600.0
+        try:
+            m = re.search(r"retry after\s+(\d+)\s+seconds", s)
+            if m:
+                wait_s = max(wait_s, float(int(m.group(1))))
+        except Exception:
+            pass
+            
+        with _hf_commit_blocked_lock:
+            global _hf_commit_blocked_until
+            _hf_commit_blocked_until = time.time() + wait_s
+            
+        return (True, wait_s)
+        
     try:
         m = re.search(r"retry after\s+(\d+)\s+seconds", s)
         if m:
             return (True, float(int(m.group(1))))
     except Exception:
         pass
-    return (True, 30.0)
+    return (True, 60.0)
 
 
 def _hf_create_commit_retry(api, *, repo_id: str, operations, commit_message: str, create_pr: bool = False):
+    # Check if we are in a long-term block for commits
+    with _hf_commit_blocked_lock:
+        now = time.time()
+        if now < _hf_commit_blocked_until:
+            _d(f"HF Commit suppressed due to active 429 block | remaining={int(_hf_commit_blocked_until - now)}s")
+            return
+
     last = None
     attempt = 0
-    while attempt < 6:
+    max_attempts = 8
+    while attempt < max_attempts:
         try:
             api.create_commit(
                 repo_id=repo_id,
@@ -946,11 +966,22 @@ def _hf_create_commit_retry(api, *, repo_id: str, operations, commit_message: st
             last = e
             rl, wait_s = _hf_is_rate_limited(e)
             if rl:
+                if wait_s >= 3600.0:
+                    # Specific commit limit hit, don't keep trying in this thread
+                    _d(f"HF Commit hard rate limit hit (128/h) | msg={commit_message}")
+                    return
+                
+                wait_time = max(2.0 ** (attempt + 1), float(wait_s or 30.0))
+                # Add some jitter to avoid thundering herd
+                wait_time = wait_time * (0.8 + 0.4 * (time.time() % 1.0))
+                _d(f"HF Commit Rate Limited (attempt {attempt+1}/{max_attempts}) | Retrying in {int(wait_time)}s... | err={str(e)[:100]}")
                 try:
-                    time.sleep(max(1.0, float(wait_s or 30.0)) * (0.8 + 0.4 * (time.time() % 1.0)))
+                    time.sleep(wait_time)
                 except Exception:
                     time.sleep(5.0)
+                attempt += 1
                 continue
+            
             if _hf_should_retry_with_pr(e) and (not create_pr):
                 create_pr = True
                 continue
@@ -1305,6 +1336,17 @@ class RangeLockSync:
         self.done_ranges = set()
         self.done_prefix = 0
         self.range_size = None
+        
+        # Local cache for progress to avoid excessive HF commits
+        self._local_progress_cache: Dict[Tuple[int, int], Dict[str, Any]] = {}
+        self._last_hf_progress_ts: Dict[Tuple[int, int], float] = {}
+        self.hf_progress_interval_s = 1800.0  # Increased to 30 minutes to be even safer
+        self.hf_heartbeat_interval_s = 1800.0 # Increased to 30 minutes
+        
+        # New cache for range lock results to avoid 429 on high-frequency checks
+        self._range_lock_cache: Dict[Tuple[int, int], Tuple[bool, float]] = {}
+        self.range_lock_cache_ttl = 300.0  # Cache lock status for 5 minutes
+        
         try:
             obj = _hf_try_read_json(self.repo_id, _hf_range_done_prefix_repo_path())
             if isinstance(obj, dict):
@@ -1380,6 +1422,17 @@ class RangeLockSync:
     def try_lock_range(self, range_start: int, range_end: int) -> bool:
         if (not self.repo_id) or range_start < 0 or range_end < range_start:
             return False
+            
+        key = (int(range_start), int(range_end))
+        now = time.time()
+        
+        # Check local cache first to avoid API spam
+        with self.lock:
+            if key in self._range_lock_cache:
+                ok, ts = self._range_lock_cache[key]
+                if (now - ts) < self.range_lock_cache_ttl:
+                    return ok
+
         try:
             if _RANGE_DONE_DIR:
                 with self.lock:
@@ -1391,6 +1444,9 @@ class RangeLockSync:
 
         try:
             if _RANGE_DONE_DIR and hf_file_exists_cached(self.repo_id, _hf_range_done_repo_path(int(range_start), int(range_end)), ttl_s=60.0):
+                # Cache failure
+                with self.lock:
+                    self._range_lock_cache[key] = (False, now)
                 return False
         except Exception:
             pass
@@ -1402,10 +1458,19 @@ class RangeLockSync:
                 try:
                     age = time.time() - float(ts)
                     if age < float(_RANGE_LOCK_STALE_SECS):
+                        # Cache failure
+                        with self.lock:
+                            self._range_lock_cache[key] = (False, now)
                         return False
                 except Exception:
                     return False
+        
         ok = _hf_try_write_range_lock(self.repo_id, range_start, range_end, self.instance_id, time.time())
+        
+        # Cache the result
+        with self.lock:
+            self._range_lock_cache[key] = (bool(ok), now)
+            
         return bool(ok)
 
     def read_progress(self, range_start: int, range_end: int):
@@ -1423,44 +1488,55 @@ class RangeLockSync:
             return False
         now = time.time()
         key = (int(range_start), int(range_end))
-        try:
-            with self.lock:
-                last = float(self._last_progress_ts.get(key, 0.0) or 0.0)
-                if (now - last) < float(self.progress_secs):
-                    return True
-                self._last_progress_ts[key] = float(now)
-        except Exception:
-            pass
+        
+        # Update local cache first
+        with self.lock:
+            self._local_progress_cache[key] = dict(progress_obj)
+            last_sync = float(self._last_hf_progress_ts.get(key, 0.0))
+            
+            # Rate limit HF commits: only sync if enough time has passed
+            if (now - last_sync) < float(self.hf_progress_interval_s):
+                return True
+            
+            self._last_hf_progress_ts[key] = float(now)
+
         payload = dict(progress_obj)
         payload['_updated_at'] = float(now)
         payload['_owner'] = str(self.instance_id)
         repo_path = _hf_range_progress_repo_path(range_start, range_end)
+        # Use retry logic for commit
         return bool(_hf_try_write_json(self.repo_id, repo_path, payload, f"range progress {range_start}-{range_end}"))
 
     def heartbeat(self, range_start: int, range_end: int, progress_obj: dict | None = None) -> bool:
         now = time.time()
         key = (int(range_start), int(range_end))
+        
+        # Update local cache if progress_obj provided
+        if progress_obj is not None:
+            with self.lock:
+                self._local_progress_cache[key] = dict(progress_obj)
+
         try:
             with self.lock:
                 last = float(self._last_heartbeat_ts.get(key, 0.0) or 0.0)
-                if (now - last) < float(self.heartbeat_secs):
-                    if progress_obj is not None:
-                        self.write_progress(range_start, range_end, progress_obj)
+                # Significantly throttle HF heartbeats to avoid 429 commit limits
+                if (now - last) < float(self.hf_heartbeat_interval_s):
                     return True
                 self._last_heartbeat_ts[key] = float(now)
         except Exception:
             pass
 
-        info = _hf_try_get_range_lock_info(self.repo_id, range_start, range_end)
-        if not info:
-            return False
-        if str(info.get('owner') or '') != str(self.instance_id):
-            return False
-
-        ok = _hf_try_write_range_lock(self.repo_id, range_start, range_end, self.instance_id, now)
-        if progress_obj is not None:
-            self.write_progress(range_start, range_end, progress_obj)
-        return bool(ok)
+        # If we have cached progress, sync it with heartbeat
+        sync_obj = None
+        with self.lock:
+            if key in self._local_progress_cache:
+                sync_obj = self._local_progress_cache[key]
+        
+        if sync_obj is not None:
+            return self.write_progress(range_start, range_end, sync_obj)
+            
+        # Bare heartbeat (no progress) - actually HF sync usually wants progress
+        return True
 
     def mark_abandoned_range(self, range_start: int, range_end: int, reason: str) -> bool:
         now = time.time()

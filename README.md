@@ -28,6 +28,11 @@ configs:
 - **Persistent queue recovery**: The pipeline now supports persistent queueing via `pending_queue.jsonl`. On startup, it automatically checks the HF repository and local index to absorb any unfinished tasks from previous runs.
 - **Runtime Queue Management**: You can manage the running pipeline's queue using the `queue_manager.py` tool. It allows adding tasks with custom properties (e.g., overriding HF upload) or listing/clearing pending tasks without stopping the pipeline.
 - **Optimized Token Rotation**: Unsplash API keys are now rotated more efficiently. For rate-limited keys, the pipeline will attempt to retry after 30 minutes (while maintaining a default 1-hour reset window), maximizing throughput.
+- **Hugging Face Rate Limit Protection**: The pipeline now implements a multi-layer protection mechanism against HF API limits:
+    - **Global Commit Circuit Breaker**: Automatically suppresses non-critical metadata commits for 1 hour when the repository commit limit (128/h) is reached.
+    - **Aggressive Throttling**: Progress and heartbeat sync frequency is reduced to once every 30 minutes.
+    - **Local Caching**: Range lock status and progress are cached locally to minimize redundant API calls.
+    - **Robust Backoff**: Centralized commit logic with exponential backoff and jitter for all HF operations.
 
 ## Data fields
 
