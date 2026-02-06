@@ -1,10 +1,15 @@
+import asyncio
 import os
-import re
-import time
-from urllib.parse import urlencode
+import random
+import threading
+import subprocess
 from typing import List, Dict, Optional, Any, Callable, Union
 
 import requests
+
+# For auto-registration
+_AUTO_REG_LOCK = threading.Lock()
+_IS_REGISTERING = False
 
 
 _UNSPLASH_ACCESS_KEY = None
@@ -220,6 +225,105 @@ def _active_app_name() -> str:
         return str(_APP_NAME or "").strip() or "sharp-ply-share"
 
 
+def _trigger_auto_registration():
+    """Trigger the external registration script and wait for it to finish."""
+    global _IS_REGISTERING
+    with _AUTO_REG_LOCK:
+        if _IS_REGISTERING:
+            return
+        _IS_REGISTERING = True
+    
+    try:
+        app_name = f"sharp-ply-share-{random.randint(1000, 9999)}"
+        _d(f"[AUTO_REG] 检测到 Key 池耗尽，尝试注册新应用: {app_name}")
+        
+        # Run the script using the current python interpreter
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "register_unsplash_app.py")
+        
+        # Use a separate process to avoid event loop conflicts if we are in one
+        # Also, we want to run it in a way that might allow the user to see the browser if needed, 
+        # but since this is a background pipeline, we try headless=False first but it might fail 
+        # if no X server/UI is available. 
+        # The script is designed to handle this.
+        cmd = [sys.executable, script_path, app_name]
+        
+        # We need sys for sys.executable
+        import sys
+        
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        
+        if process.returncode == 0:
+            # Extract access key from stdout if possible
+            match = re.search(r"Access Key: (\S+)", stdout)
+            if match:
+                new_key = match.group(1).strip()
+                _d(f"[AUTO_REG] 新应用注册成功! Key: {new_key}")
+                
+                # Add to pool
+                with _AUTO_REG_LOCK:
+                    _KEY_POOL.append({"access_key": new_key, "app_name": app_name})
+                    _KEY_NEXT_API_ALLOWED_TS.append(0.0)
+                    _KEY_API_BACKOFF_SECONDS.append(0.0)
+                    _KEY_RATE_LIMITED.append(False)
+                
+                # Try to append to .env or config if possible (optional but good)
+                _update_env_file(new_key)
+            else:
+                _d(f"[AUTO_REG] 脚本运行成功但未在输出中找到 Key. Output: {stdout[:200]}")
+        else:
+            _d(f"[AUTO_REG] 脚本运行失败 (code={process.returncode}). Error: {stderr}")
+            
+    except Exception as e:
+        _d(f"[AUTO_REG] 自动注册发生异常: {str(e)}")
+    finally:
+        with _AUTO_REG_LOCK:
+            _IS_REGISTERING = False
+
+
+def _update_env_file(new_key: str):
+    """Attempt to append the new key to the .env file."""
+    try:
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+        if not os.path.exists(env_path):
+            return
+            
+        with open(env_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            
+        updated = False
+        new_lines = []
+        for line in lines:
+            if line.strip().startswith("UNSPLASH_API_KEYS="):
+                parts = line.strip().split("=", 1)
+                val = parts[1].strip()
+                if new_key not in val:
+                    if val:
+                        new_val = f"{val},{new_key}"
+                    else:
+                        new_val = new_key
+                    new_lines.append(f"UNSPLASH_API_KEYS={new_val}\n")
+                    updated = True
+                else:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+        
+        if not updated:
+            # Maybe the key wasn't there at all
+            has_keys_var = any(l.strip().startswith("UNSPLASH_API_KEYS=") for l in lines)
+            if not has_keys_var:
+                new_lines.append(f"\nUNSPLASH_API_KEYS={new_key}\n")
+                updated = True
+                
+        if updated:
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+            _d(f"[AUTO_REG] 已更新 .env 文件并添加新 Key.")
+    except Exception as e:
+        _d(f"[AUTO_REG] 更新 .env 失败: {str(e)}")
+
+
 def _ensure_key_for_request() -> bool:
     global _rate_limited, _next_api_allowed_ts, _ACTIVE_KEY_IDX
     try:
@@ -272,8 +376,21 @@ def _ensure_key_for_request() -> bool:
                 best_ts = effective_ts
 
         if best is None:
-            best = 0
-            best_ts = float(now) + 3600.0
+            # Trigger auto-registration if all keys are exhausted
+            _trigger_auto_registration()
+            
+            # Re-check pool after registration attempt
+            if _KEY_POOL:
+                for i in range(len(_KEY_POOL)):
+                    ts = float(_KEY_NEXT_API_ALLOWED_TS[i])
+                    if ts <= now:
+                        best = i
+                        best_ts = ts
+                        break
+            
+            if best is None:
+                best = 0
+                best_ts = float(now) + 3600.0
 
         prev_idx = int(cur)
         _ACTIVE_KEY_IDX = int(best)
