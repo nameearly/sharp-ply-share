@@ -20,12 +20,14 @@ class IndexSync:
         hf_index_flush_every: int,
         hf_index_flush_secs: float,
         hf_index_refresh_secs: float = 300.0,
-        debug_fn,
+        queue_file: Optional[str] = None,
+        debug_fn: Optional[Callable[[str], None]] = None,
     ):
         self.repo_id = str(repo_id or "").strip()
         self.repo_type = str(repo_type or "dataset").strip().lower()
         self.repo_path = str(repo_path or "").strip().lstrip("/")
         self.save_dir = os.path.abspath(str(save_dir or os.getcwd()))
+        self.queue_file = os.path.join(self.save_dir, "pending_queue.jsonl") if queue_file is None else queue_file
         self.local_path = os.path.join(
             self.save_dir,
             os.path.basename(self.repo_path) if self.repo_path else "train.jsonl",
@@ -611,21 +613,66 @@ class IndexSync:
 
         return bool(changed)
 
+    def add_to_queue(self, task: dict):
+        if not isinstance(task, dict):
+            return
+        with self.lock:
+            try:
+                if not os.path.exists(os.path.dirname(self.queue_file)):
+                    os.makedirs(os.path.dirname(self.queue_file), exist_ok=True)
+                with open(self.queue_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(task, ensure_ascii=False) + "\n")
+            except Exception as e:
+                self._print(f"写入队列文件失败 | err={e}")
+
+    def load_queue(self) -> List[dict]:
+        tasks = []
+        if not os.path.exists(self.queue_file):
+            return tasks
+        with self.lock:
+            try:
+                with open(self.queue_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            tasks.append(json.loads(line))
+            except Exception as e:
+                self._print(f"读取队列文件失败 | err={e}")
+        return tasks
+
+    def clear_queue(self):
+        with self.lock:
+            try:
+                if os.path.exists(self.queue_file):
+                    os.remove(self.queue_file)
+            except Exception as e:
+                self._print(f"清理队列文件失败 | err={e}")
+
     def add_row(self, row: dict):
         norm = self._normalize_row(row)
         if not norm:
             return
         pid = str(norm.get("image_id") or "")
+        
         with self.lock:
             if pid in self.indexed:
                 return
+            
+            # 写入本地文件
             try:
+                # 检查目录是否存在
+                if not os.path.exists(os.path.dirname(self.local_path)):
+                    os.makedirs(os.path.dirname(self.local_path), exist_ok=True)
+                    
                 with open(self.local_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(norm, ensure_ascii=False) + "\n")
                 self.indexed.add(pid)
                 self.pending += 1
-            except Exception:
+            except Exception as e:
+                self._print(f"写入本地 index 失败 | id={pid} | err={e}")
                 return
+                
+        # 尝试触发上传
         self.maybe_flush(False)
 
     def maybe_flush(self, force: bool):

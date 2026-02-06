@@ -2,6 +2,7 @@ import os
 import re
 import time
 from urllib.parse import urlencode
+from typing import List, Dict, Optional, Any, Callable, Union
 
 import requests
 
@@ -103,16 +104,17 @@ def configure_unsplash(
     _rate_limited = False
 
 
-def load_unsplash_key_pool(json_path: str, *, default_app_name: str | None = None) -> list[dict]:
+def load_unsplash_key_pool(json_path: str, *, default_app_name: Optional[str] = None) -> List[Dict[str, str]]:
     try:
         p = str(json_path or "").strip()
-        if not p or (not os.path.exists(p)):
+        if not p or not os.path.exists(p):
             return []
-        raw = open(p, "r", encoding="utf-8").read()
+        with open(p, "r", encoding="utf-8") as f:
+            raw = f.read()
     except Exception:
         return []
 
-    def _normalize_items(obj) -> list[dict]:
+    def _normalize_items(obj: Any) -> List[Dict[str, str]]:
         if obj is None:
             return []
         if isinstance(obj, dict):
@@ -129,9 +131,9 @@ def load_unsplash_key_pool(json_path: str, *, default_app_name: str | None = Non
                 continue
             an = it.get("UNSPLASH_APP_NAME") or it.get("unsplash_app_name") or it.get("app_name")
             an = str(an or "").strip()
-            if (not an) and default_app_name:
-                an = str(default_app_name or "").strip()
-            out.append({"UNSPLASH_ACCESS_KEY": k, "UNSPLASH_APP_NAME": an})
+            if not an and default_app_name:
+                an = str(default_app_name).strip()
+            out.append({"access_key": k, "app_name": an or "sharp-ply-share"})
         return out
 
     try:
@@ -258,9 +260,16 @@ def _ensure_key_for_request() -> bool:
                 best = i
                 best_ts = ts
                 break
-            if best_ts is None or ts < best_ts:
+            
+            # 允许提前 30 分钟（1800秒）尝试已被限速的 key
+            # Unsplash 限速重置通常是一小时，但半小时可能已经恢复部分额度或重置
+            effective_ts = ts
+            if _KEY_RATE_LIMITED[i]:
+                effective_ts = ts - 1800.0
+
+            if best_ts is None or effective_ts < best_ts:
                 best = i
-                best_ts = ts
+                best_ts = effective_ts
 
         if best is None:
             best = 0

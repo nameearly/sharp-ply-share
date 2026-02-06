@@ -6,6 +6,7 @@ import shutil
 import csv
 import json
 import re
+from typing import Set, List, Dict, Any, Optional, Tuple, Callable
 
 import sharp_dataset_pipeline.hf_sync as hf_sync
 import sharp_dataset_pipeline.unsplash as unsplash
@@ -14,6 +15,7 @@ import sharp_dataset_pipeline.hf_utils as hf_utils
 import sharp_dataset_pipeline.hf_upload as hf_upload
 import sharp_dataset_pipeline.index_sync as hf_index_sync
 import sharp_dataset_pipeline.parquet_tools as parquet_tools
+from sharp_dataset_pipeline import config
 
 
 def _load_dotenv_if_present() -> None:
@@ -26,35 +28,28 @@ def _load_dotenv_if_present() -> None:
 
     def _apply_one(path: str, *, allow_override_loaded: bool) -> None:
         try:
-            if not path or (not os.path.isfile(path)):
+            if not path or not os.path.isfile(path):
                 return
             with open(path, "r", encoding="utf-8") as f:
                 for raw in f:
-                    line = str(raw or "").strip()
-                    if not line:
-                        continue
-                    if line.startswith("#"):
+                    line = raw.strip()
+                    if not line or line.startswith("#"):
                         continue
                     if line.lower().startswith("export "):
                         line = line[7:].lstrip()
                     if "=" not in line:
                         continue
-                    k, v = line.split("=", 1)
-                    k = str(k or "").strip()
-                    v = str(v or "").strip()
+                    k, v = map(str.strip, line.split("=", 1))
                     if not k:
                         continue
-                    can_override = bool(allow_override_loaded) and (k in loaded_keys)
-                    if (k in os.environ) and (not can_override):
-                        continue
-                    if (len(v) >= 2) and ((v[0] == v[-1]) and v[0] in ("\"", "'")):
-                        v = v[1:-1]
-                    if not v:
-                        continue
-                    os.environ[k] = v
-                    loaded_keys.add(k)
-        except Exception:
-            return
+                    # 只有当 key 不在 env 中，或者明确允许覆盖已加载项且 key 在已加载列表中时才设置
+                    if k not in os.environ or (allow_override_loaded and k in loaded_keys):
+                        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("\"", "'"):
+                            v = v[1:-1]
+                        os.environ[k] = v
+                        loaded_keys.add(k)
+        except Exception as e:
+            print(f"Error loading dotenv file {path}: {e}")
 
     dirs = []
     try:
@@ -240,13 +235,13 @@ QUERIES = [
 SEARCH_ORDERS = ["latest", "relevant"]
 LIST_ORDERS = ["oldest", "latest", "popular"]
 
-def print_debug(msg):
+def print_debug(msg: Any) -> None:
     """调试输出（带时间戳）"""
-    if DEBUG_MODE:
+    if config.DEBUG_MODE:
         timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
         print(f"{timestamp} [DEBUG] {msg}")
 
-def _query_nvidia_smi_rows():
+def _query_nvidia_smi_rows() -> List[List[str]]:
     try:
         cmd = [
             "nvidia-smi",
@@ -267,17 +262,17 @@ def _query_nvidia_smi_rows():
     except Exception:
         return []
 
-def _append_gpu_log(event: str, input_path: str):
-    if not LOG_GPU_MEM:
+def _append_gpu_log(event: str, input_path: str) -> None:
+    if not config.LOG_GPU_MEM:
         return
     rows = _query_nvidia_smi_rows()
     if not rows:
         return
 
-    os.makedirs(SAVE_DIR, exist_ok=True)
-    write_header = not os.path.exists(GPU_LOG_FILE)
+    os.makedirs(config.SAVE_DIR, exist_ok=True)
+    write_header = not os.path.exists(config.GPU_LOG_FILE)
     try:
-        with open(GPU_LOG_FILE, "a", newline="", encoding="utf-8") as f:
+        with open(config.GPU_LOG_FILE, "a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             if write_header:
                 w.writerow(
@@ -294,19 +289,19 @@ def _append_gpu_log(event: str, input_path: str):
                     ]
                 )
             for ts, idx, name, mem_used, mem_total, util in rows:
-                w.writerow([ts, idx, name, mem_used, mem_total, util, event, RUN_ID, input_path])
+                w.writerow([ts, idx, name, mem_used, mem_total, util, event, config.RUN_ID, input_path])
     except Exception:
         return
 
-def init_environment():
+def init_environment() -> Set[str]:
     """初始化目录和记录文件，读取已处理的ID（防重基础）"""
-    if not os.path.exists(SAVE_DIR):
-        os.makedirs(SAVE_DIR)
-        print_debug(f"创建保存目录：{SAVE_DIR}")
+    if not os.path.exists(config.SAVE_DIR):
+        os.makedirs(config.SAVE_DIR)
+        print_debug(f"创建保存目录：{config.SAVE_DIR}")
     else:
-        print_debug(f"保存目录已存在：{SAVE_DIR}")
+        print_debug(f"保存目录已存在：{config.SAVE_DIR}")
 
-    checked_ids = set()
+    checked_ids: Set[str] = set()
     print_debug(f"已处理的ID数量：{len(checked_ids)}")
     return checked_ids
 
@@ -314,19 +309,19 @@ def _hf_try_super_squash(repo_id: str) -> bool:
     try:
         from huggingface_hub import HfApi
         api = HfApi()
-        api.super_squash_history(repo_id=repo_id, repo_type=HF_REPO_TYPE)
+        api.super_squash_history(repo_id=repo_id, repo_type=config.HF_REPO_TYPE)
         return True
     except Exception as e:
         print_debug(f"HF super_squash_history 失败（可忽略） | err={str(e)}")
         return False
 
 
-def _list_gaussian_plys():
+def _list_gaussian_plys() -> Set[str]:
     try:
-        if not os.path.exists(GAUSSIANS_DIR):
+        if not os.path.exists(config.GAUSSIANS_DIR):
             return set()
         out = set()
-        for f in os.listdir(GAUSSIANS_DIR):
+        for f in os.listdir(config.GAUSSIANS_DIR):
             low = str(f).lower()
             if not low.endswith(".ply"):
                 continue
@@ -334,14 +329,14 @@ def _list_gaussian_plys():
                 continue
             if ".vertexonly.binary" in low:
                 continue
-            out.add(os.path.join(GAUSSIANS_DIR, f))
+            out.add(os.path.join(config.GAUSSIANS_DIR, f))
         return out
     except Exception:
         return set()
 
 
-def _run_sharp_predict_once(input_path):
-    extra = ["-v"] if SHARP_VERBOSE else []
+def _run_sharp_predict_once(input_path: str) -> List[str]:
+    extra = ["-v"] if config.SHARP_VERBOSE else []
     plys_before = _list_gaussian_plys()
 
     def _is_cuda_device(dev: str) -> bool:
@@ -355,7 +350,7 @@ def _run_sharp_predict_once(input_path):
         except Exception:
             return True
 
-    def _predict_timeout_s() -> float | None:
+    def _predict_timeout_s() -> Optional[float]:
         try:
             raw = str(os.getenv("SHARP_PREDICT_TIMEOUT_SECS", "") or "").strip()
             if raw:
@@ -364,7 +359,7 @@ def _run_sharp_predict_once(input_path):
         except Exception:
             pass
         try:
-            if _is_cuda_device(SHARP_DEVICE):
+            if _is_cuda_device(config.SHARP_DEVICE):
                 v = float(str(os.getenv("SHARP_PREDICT_TIMEOUT_SECS_CUDA", "1200") or "1200").strip())
             else:
                 v = float(str(os.getenv("SHARP_PREDICT_TIMEOUT_SECS_CPU", "3600") or "3600").strip())
@@ -372,7 +367,7 @@ def _run_sharp_predict_once(input_path):
         except Exception:
             return 1200.0
 
-    def _sig(p: str):
+    def _sig(p: str) -> Optional[Tuple[int, int]]:
         try:
             st = os.stat(p)
             return (int(st.st_size), int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))))
@@ -391,15 +386,15 @@ def _run_sharp_predict_once(input_path):
         "conda",
         "run",
         "-n",
-        CONDA_ENV_NAME,
+        config.CONDA_ENV_NAME,
         "sharp",
         "predict",
         "-i",
         input_path,
         "-o",
-        GAUSSIANS_DIR,
+        config.GAUSSIANS_DIR,
         "--device",
-        SHARP_DEVICE,
+        config.SHARP_DEVICE,
         *extra,
     ]
 
@@ -413,7 +408,7 @@ def _run_sharp_predict_once(input_path):
     try:
         try:
             to_s = _predict_timeout_s()
-            p = subprocess.Popen(cmd, cwd=ML_SHARP_DIR, **popen_kw)
+            p = subprocess.Popen(cmd, cwd=config.ML_SHARP_DIR, **popen_kw)
             try:
                 p.wait(timeout=to_s)
             except subprocess.TimeoutExpired:
@@ -437,25 +432,25 @@ def _run_sharp_predict_once(input_path):
                     p.wait(timeout=5)
                 except Exception:
                     pass
-                print_debug(f"predict timeout（跳过） | id={os.path.splitext(os.path.basename(str(input_path)))[0]} | device={str(SHARP_DEVICE)} | timeout_s={int(to_s or 0)}")
+                print_debug(f"predict timeout（跳过） | id={os.path.splitext(os.path.basename(str(input_path)))[0]} | device={str(config.SHARP_DEVICE)} | timeout_s={int(to_s or 0)}")
                 return []
             if int(p.returncode or 0) != 0:
                 raise subprocess.CalledProcessError(int(p.returncode or 1), cmd)
         except subprocess.CalledProcessError as e:
             print_debug(f"ml-sharp 通过 'sharp predict' 执行失败，将尝试源码方式运行 | err={str(e)}")
 
-            src_dir = os.path.join(ML_SHARP_DIR, "src")
+            src_dir = os.path.join(config.ML_SHARP_DIR, "src")
             argv = [
                 "sharp",
                 "predict",
                 "-i",
                 input_path,
                 "-o",
-                GAUSSIANS_DIR,
+                config.GAUSSIANS_DIR,
                 "--device",
-                SHARP_DEVICE,
+                config.SHARP_DEVICE,
             ]
-            if SHARP_VERBOSE:
+            if config.SHARP_VERBOSE:
                 argv.append("-v")
 
             code = (
@@ -465,9 +460,9 @@ def _run_sharp_predict_once(input_path):
                 f"sys.argv = {repr(argv)}; "
                 "main_cli()"
             )
-            cmd2 = ["conda", "run", "-n", CONDA_ENV_NAME, "python", "-c", code]
+            cmd2 = ["conda", "run", "-n", config.CONDA_ENV_NAME, "python", "-c", code]
             to_s = _predict_timeout_s()
-            p2 = subprocess.Popen(cmd2, cwd=ML_SHARP_DIR, **popen_kw)
+            p2 = subprocess.Popen(cmd2, cwd=config.ML_SHARP_DIR, **popen_kw)
             try:
                 p2.wait(timeout=to_s)
             except subprocess.TimeoutExpired:
@@ -491,7 +486,7 @@ def _run_sharp_predict_once(input_path):
                     p2.wait(timeout=5)
                 except Exception:
                     pass
-                print_debug(f"predict timeout（源码方式，跳过） | id={os.path.splitext(os.path.basename(str(input_path)))[0]} | device={str(SHARP_DEVICE)} | timeout_s={int(to_s or 0)}")
+                print_debug(f"predict timeout（源码方式，跳过） | id={os.path.splitext(os.path.basename(str(input_path)))[0]} | device={str(config.SHARP_DEVICE)} | timeout_s={int(to_s or 0)}")
                 return []
             if int(p2.returncode or 0) != 0:
                 raise subprocess.CalledProcessError(int(p2.returncode or 1), cmd2)
@@ -936,120 +931,120 @@ def run_pipeline():
             except Exception:
                 remote_done_fn = None
 
-    def _upload_sample_pair(repo_id: str, image_id: str, image_path: str, ply_path: str):
-        return hf_upload.upload_sample_pair(
-            repo_id=repo_id,
-            image_id=image_id,
-            image_path=image_path,
-            ply_path=ply_path,
-            hf_subdir=HF_SUBDIR,
-            repo_type=HF_REPO_TYPE,
-            gsplat_enabled=GSPLAT_UPLOAD,
-            gsplat_base=GSPLAT_BASE,
-            gsplat_expiration_type=GSPLAT_EXPIRATION_TYPE,
-            gsplat_filter_visibility=GSPLAT_FILTER_VISIBILITY,
-            splat_transform_bin=SPLAT_TRANSFORM_BIN,
-            gsplat_use_small_ply=GSPLAT_USE_SMALL_PLY,
-            spz_enabled=SPZ_EXPORT,
-            spz_tool=SPZ_TOOL,
-            gsbox_bin=GSBOX_BIN,
-            gsbox_spz_quality=GSBOX_SPZ_QUALITY,
-            gsbox_spz_version=GSBOX_SPZ_VERSION,
-            gsconverter_bin=GSCONVERTER_BIN,
-            gsconverter_compression_level=GSCONVERTER_COMPRESSION_LEVEL,
-            debug_fn=print_debug,
+        def _upload_sample_pair(repo_id: str, image_id: str, image_path: str, ply_path: str):
+            return hf_upload.upload_sample_pair(
+                repo_id=repo_id,
+                image_id=image_id,
+                image_path=image_path,
+                ply_path=ply_path,
+                hf_subdir=HF_SUBDIR,
+                repo_type=HF_REPO_TYPE,
+                gsplat_enabled=GSPLAT_UPLOAD,
+                gsplat_base=GSPLAT_BASE,
+                gsplat_expiration_type=GSPLAT_EXPIRATION_TYPE,
+                gsplat_filter_visibility=GSPLAT_FILTER_VISIBILITY,
+                splat_transform_bin=SPLAT_TRANSFORM_BIN,
+                gsplat_use_small_ply=GSPLAT_USE_SMALL_PLY,
+                spz_enabled=SPZ_EXPORT,
+                spz_tool=SPZ_TOOL,
+                gsbox_bin=GSBOX_BIN,
+                gsbox_spz_quality=GSBOX_SPZ_QUALITY,
+                gsbox_spz_version=GSBOX_SPZ_VERSION,
+                gsconverter_bin=GSCONVERTER_BIN,
+                gsconverter_compression_level=GSCONVERTER_COMPRESSION_LEVEL,
+                debug_fn=print_debug,
+            )
+
+        def _upload_sample_pairs(repo_id: str, tasks: list):
+            return hf_upload.upload_sample_pairs(
+                repo_id=repo_id,
+                tasks=tasks,
+                hf_subdir=HF_SUBDIR,
+                repo_type=HF_REPO_TYPE,
+                gsplat_enabled=GSPLAT_UPLOAD,
+                gsplat_base=GSPLAT_BASE,
+                gsplat_expiration_type=GSPLAT_EXPIRATION_TYPE,
+                gsplat_filter_visibility=GSPLAT_FILTER_VISIBILITY,
+                splat_transform_bin=SPLAT_TRANSFORM_BIN,
+                gsplat_use_small_ply=GSPLAT_USE_SMALL_PLY,
+                spz_enabled=SPZ_EXPORT,
+                spz_tool=SPZ_TOOL,
+                gsbox_bin=GSBOX_BIN,
+                gsbox_spz_quality=GSBOX_SPZ_QUALITY,
+                gsbox_spz_version=GSBOX_SPZ_VERSION,
+                gsconverter_bin=GSCONVERTER_BIN,
+                gsconverter_compression_level=GSCONVERTER_COMPRESSION_LEVEL,
+                debug_fn=print_debug,
+            )
+
+        cfg = pipeline.PipelineConfig(
+            save_dir=SAVE_DIR,
+            control_dir=CONTROL_DIR,
+            pause_file=PAUSE_FILE,
+            stop_file=STOP_FILE,
+            idle_sleep_s=float(IDLE_SLEEP_S or 0.5),
+            source=SOURCE,
+            queries=QUERIES,
+            search_orders=SEARCH_ORDERS,
+            list_orders=LIST_ORDERS,
+            list_per_page=int(LIST_PER_PAGE),
+            list_auto_seek=bool(LIST_AUTO_SEEK),
+            list_seek_back_pages=int(LIST_SEEK_BACK_PAGES),
+            max_candidates=-1,
+            max_images=int(max_images_eff),
+            range_size=int(RANGE_SIZE),
+            stop_on_rate_limit=bool(STOP_ON_RATE_LIMIT),
+            input_images_dir=INPUT_IMAGES_DIR,
+            inject_exif=bool(INJECT_EXIF),
+            download_queue_max=int(download_queue_max_eff),
+            upload_queue_max=int(UPLOAD_QUEUE_MAX),
+            upload_workers=int(UPLOAD_WORKERS),
+            hf_upload=bool(HF_UPLOAD),
+            hf_repo_id=HF_REPO_ID,
+            hf_lock_stale_secs=float(HF_LOCK_STALE_SECS),
+            hf_squash_every=int(HF_SQUASH_EVERY or 0),
+            ply_delete_after_upload=bool(PLY_DELETE_AFTER_UPLOAD),
+            ply_keep_last=int(PLY_KEEP_LAST),
+            gaussians_dir=GAUSSIANS_DIR,
+            sigint_window_s=float(os.getenv("SIGINT_WINDOW_S", "2.0")),
+
+            hf_upload_batch_size=int(HF_UPLOAD_BATCH_SIZE),
+            hf_upload_batch_wait_ms=int(HF_UPLOAD_BATCH_WAIT_MS),
+
+            pipeline_heartbeat_secs=float(PIPELINE_HEARTBEAT_SECS),
+            stall_warn_secs=float(STALL_WARN_SECS),
+
+            ant_enabled=bool(ANT_ENABLED),
+            ant_candidate_ranges=int(ANT_CANDIDATE_RANGES),
+            ant_epsilon=float(ANT_EPSILON),
+            ant_fresh_secs=float(ANT_FRESH_SECS),
         )
 
-    def _upload_sample_pairs(repo_id: str, tasks: list):
-        return hf_upload.upload_sample_pairs(
-            repo_id=repo_id,
-            tasks=tasks,
-            hf_subdir=HF_SUBDIR,
-            repo_type=HF_REPO_TYPE,
-            gsplat_enabled=GSPLAT_UPLOAD,
-            gsplat_base=GSPLAT_BASE,
-            gsplat_expiration_type=GSPLAT_EXPIRATION_TYPE,
-            gsplat_filter_visibility=GSPLAT_FILTER_VISIBILITY,
-            splat_transform_bin=SPLAT_TRANSFORM_BIN,
-            gsplat_use_small_ply=GSPLAT_USE_SMALL_PLY,
-            spz_enabled=SPZ_EXPORT,
-            spz_tool=SPZ_TOOL,
-            gsbox_bin=GSBOX_BIN,
-            gsbox_spz_quality=GSBOX_SPZ_QUALITY,
-            gsbox_spz_version=GSBOX_SPZ_VERSION,
-            gsconverter_bin=GSCONVERTER_BIN,
-            gsconverter_compression_level=GSCONVERTER_COMPRESSION_LEVEL,
+        run_sharp_predict_once_fn = _run_sharp_predict_once
+        if SKIP_PREDICT:
+            def _skip_predict(_input_path: str):
+                return []
+            try:
+                _skip_predict._skip_predict = True
+            except Exception:
+                pass
+            run_sharp_predict_once_fn = _skip_predict
+
+        pipeline.run(
+            cfg,
+            checked_ids=checked_ids,
+            coord=coord,
+            range_coord=range_coord,
+            remote_done_fn=remote_done_fn,
+            index_sync=index_sync_obj,
+            upload_sample_pair_fn=_upload_sample_pair,
+            upload_sample_pairs_fn=_upload_sample_pairs,
+            try_super_squash_fn=_hf_try_super_squash,
+            run_sharp_predict_once_fn=run_sharp_predict_once_fn,
+            local_has_focal_exif_fn=_local_has_focal_exif,
+            inject_focal_exif_if_missing_fn=inject_focal_exif_if_missing,
             debug_fn=print_debug,
         )
-
-    cfg = pipeline.PipelineConfig(
-        save_dir=SAVE_DIR,
-        control_dir=CONTROL_DIR,
-        pause_file=PAUSE_FILE,
-        stop_file=STOP_FILE,
-        idle_sleep_s=float(IDLE_SLEEP_S or 0.5),
-        source=SOURCE,
-        queries=QUERIES,
-        search_orders=SEARCH_ORDERS,
-        list_orders=LIST_ORDERS,
-        list_per_page=int(LIST_PER_PAGE),
-        list_auto_seek=bool(LIST_AUTO_SEEK),
-        list_seek_back_pages=int(LIST_SEEK_BACK_PAGES),
-        max_candidates=-1,
-        max_images=int(max_images_eff),
-        range_size=int(RANGE_SIZE),
-        stop_on_rate_limit=bool(STOP_ON_RATE_LIMIT),
-        input_images_dir=INPUT_IMAGES_DIR,
-        inject_exif=bool(INJECT_EXIF),
-        download_queue_max=int(download_queue_max_eff),
-        upload_queue_max=int(UPLOAD_QUEUE_MAX),
-        upload_workers=int(UPLOAD_WORKERS),
-        hf_upload=bool(HF_UPLOAD),
-        hf_repo_id=HF_REPO_ID,
-        hf_lock_stale_secs=float(HF_LOCK_STALE_SECS),
-        hf_squash_every=int(HF_SQUASH_EVERY or 0),
-        ply_delete_after_upload=bool(PLY_DELETE_AFTER_UPLOAD),
-        ply_keep_last=int(PLY_KEEP_LAST),
-        gaussians_dir=GAUSSIANS_DIR,
-        sigint_window_s=float(os.getenv("SIGINT_WINDOW_S", "2.0")),
-
-        hf_upload_batch_size=int(HF_UPLOAD_BATCH_SIZE),
-        hf_upload_batch_wait_ms=int(HF_UPLOAD_BATCH_WAIT_MS),
-
-        pipeline_heartbeat_secs=float(PIPELINE_HEARTBEAT_SECS),
-        stall_warn_secs=float(STALL_WARN_SECS),
-
-        ant_enabled=bool(ANT_ENABLED),
-        ant_candidate_ranges=int(ANT_CANDIDATE_RANGES),
-        ant_epsilon=float(ANT_EPSILON),
-        ant_fresh_secs=float(ANT_FRESH_SECS),
-    )
-
-    run_sharp_predict_once_fn = _run_sharp_predict_once
-    if SKIP_PREDICT:
-        def _skip_predict(_input_path: str):
-            return []
-        try:
-            _skip_predict._skip_predict = True
-        except Exception:
-            pass
-        run_sharp_predict_once_fn = _skip_predict
-
-    pipeline.run(
-        cfg,
-        checked_ids=checked_ids,
-        coord=coord,
-        range_coord=range_coord,
-        remote_done_fn=remote_done_fn,
-        index_sync=index_sync_obj,
-        upload_sample_pair_fn=_upload_sample_pair,
-        upload_sample_pairs_fn=_upload_sample_pairs,
-        try_super_squash_fn=_hf_try_super_squash,
-        run_sharp_predict_once_fn=run_sharp_predict_once_fn,
-        local_has_focal_exif_fn=_local_has_focal_exif,
-        inject_focal_exif_if_missing_fn=inject_focal_exif_if_missing,
-        debug_fn=print_debug,
-    )
     finally:
         try:
             if coord is not None:

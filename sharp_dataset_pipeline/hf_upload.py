@@ -185,6 +185,28 @@ def upload_sample_pair(
 ) -> dict:
     from huggingface_hub import CommitOperationAdd, HfApi
 
+    try:
+        if (not image_path) or (not os.path.isfile(str(image_path))):
+            raise FileNotFoundError(str(image_path))
+    except Exception as e:
+        try:
+            if debug_fn:
+                debug_fn(f"HF 上传跳过：image_path 不存在 | id={str(image_id)} | path={str(image_path)}")
+        except Exception:
+            pass
+        raise
+
+    try:
+        if (not ply_path) or (not os.path.isfile(str(ply_path))):
+            raise FileNotFoundError(str(ply_path))
+    except Exception:
+        try:
+            if debug_fn:
+                debug_fn(f"HF 上传跳过：ply_path 不存在 | id={str(image_id)} | path={str(ply_path)}")
+        except Exception:
+            pass
+        raise
+
     rel_dir = "/".join([p for p in [str(hf_subdir).strip().strip("/"), str(image_id)] if p])
     img_name = os.path.basename(image_path)
     ply_name = os.path.basename(ply_path)
@@ -363,6 +385,21 @@ def upload_sample_pairs(
         image_path = str(t.get("image_path") or "")
         ply_path = str(t.get("ply_path") or "")
         if (not image_id) or (not image_path) or (not ply_path):
+            continue
+
+        try:
+            if not os.path.isfile(str(image_path)):
+                if debug_fn:
+                    debug_fn(f"HF 上传跳过：image_path 不存在 | id={str(image_id)} | path={str(image_path)}")
+                continue
+        except Exception:
+            continue
+        try:
+            if not os.path.isfile(str(ply_path)):
+                if debug_fn:
+                    debug_fn(f"HF 上传跳过：ply_path 不存在 | id={str(image_id)} | path={str(ply_path)}")
+                continue
+        except Exception:
             continue
 
         rel_dir = "/".join([p for p in [str(hf_subdir).strip().strip("/"), str(image_id)] if p])

@@ -9,6 +9,7 @@ import traceback
 import glob
 from collections import deque
 from dataclasses import dataclass
+from typing import Optional, List, Dict, Any, Set, Callable, Tuple
 
 from .progress import OrderedProgress
 from . import hf_sync
@@ -151,44 +152,45 @@ def gate(cfg: PipelineConfig, stop_event: threading.Event) -> bool:
     return True
 
 
-def _log_exc(debug_fn, msg: str, e: BaseException | None = None) -> None:
+def _log_exc(debug_fn: Optional[Callable[[str], None]], msg: str, e: Optional[BaseException] = None) -> None:
+    if debug_fn is None:
+        return
     try:
-        if debug_fn is None:
-            return
-        if e is not None:
-            debug_fn(f"{msg} | err={type(e).__name__}: {str(e)}")
-            tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-        else:
-            debug_fn(str(msg))
-            tb = traceback.format_exc()
-        if tb:
-            debug_fn(tb.rstrip())
+        err_msg = f"{msg} | err={type(e).__name__}: {str(e)}" if e else str(msg)
+        debug_fn(err_msg)
+        tb = traceback.format_exc() if e else ""
+        if tb and tb.strip():
+            debug_fn(tb.strip())
     except Exception:
         pass
 
 
-def _debug(debug_fn, msg: str) -> None:
-    try:
-        if debug_fn is not None:
+def _debug(debug_fn: Optional[Callable[[str], None]], msg: str) -> None:
+    if debug_fn is not None:
+        try:
             debug_fn(str(msg))
-    except Exception:
-        pass
+        except Exception:
+            pass
 
 
 def _build_unsplash_meta(details: dict, *, photo_id: str) -> dict:
+    if not isinstance(details, dict):
+        return {"unsplash_id": str(photo_id)}
+    
     try:
         tags = [
-            (t.get("title") or "").strip()
-            for t in (details.get("tags") or [])
-            if isinstance(t, dict) and str((t.get("title") or "").strip())
+            t.get("title", "").strip()
+            for t in details.get("tags", [])
+            if isinstance(t, dict) and t.get("title")
         ]
         topics = [
-            (t.get("title") or "").strip()
-            for t in (details.get("topics") or [])
-            if isinstance(t, dict) and str((t.get("title") or "").strip())
+            t.get("title", "").strip()
+            for t in details.get("topics", [])
+            if isinstance(t, dict) and t.get("title")
         ]
-        user = details.get("user") if isinstance(details.get("user"), dict) else {}
-        links = details.get("links") if isinstance(details.get("links"), dict) else {}
+        user = details.get("user") or {}
+        links = details.get("links") or {}
+        
         return {
             "tags": tags,
             "topics": topics,
@@ -197,10 +199,10 @@ def _build_unsplash_meta(details: dict, *, photo_id: str) -> dict:
             "alt_description": details.get("alt_description"),
             "description": details.get("description"),
             "unsplash_id": str(photo_id),
-            "unsplash_url": (links or {}).get("html"),
+            "unsplash_url": links.get("html"),
             "created_at": details.get("created_at"),
-            "user_username": user.get("username") if isinstance(user, dict) else None,
-            "user_name": user.get("name") if isinstance(user, dict) else None,
+            "user_username": user.get("username"),
+            "user_name": user.get("name"),
         }
     except Exception:
         return {"unsplash_id": str(photo_id)}
@@ -208,7 +210,12 @@ def _build_unsplash_meta(details: dict, *, photo_id: str) -> dict:
 
 def _download_if_missing(download_location: str, out_path: str) -> bool:
     try:
-        return True if os.path.exists(out_path) else bool(unsplash.download_image(download_location, out_path))
+        if os.path.isfile(str(out_path)):
+            return True
+        ok = bool(unsplash.download_image(str(download_location), str(out_path)))
+        if not ok:
+            return False
+        return bool(os.path.isfile(str(out_path)))
     except Exception:
         return False
 
@@ -222,6 +229,8 @@ def _maybe_inject_focal_exif(
     local_has_focal_exif_fn,
     inject_focal_exif_if_missing_fn,
 ) -> None:
+    # Strategy A: missing EXIF focal length is OK.
+    # If `FocalLength` is missing, ml-sharp (`sharp predict`) falls back to a default focal length (currently 30mm).
     try:
         if (not cfg.inject_exif) or (local_has_focal_exif_fn is None) or local_has_focal_exif_fn(out_path):
             return
@@ -241,14 +250,20 @@ def _enqueue_downloaded_image(
     image_q: queue.Queue,
     photo_id: str,
     out_path: str,
+    download_location: str | None,
     meta: dict,
 ) -> bool:
+    try:
+        if (not out_path) or (not os.path.isfile(str(out_path))):
+            return False
+    except Exception:
+        return False
     while (not stop_event.is_set()) and image_q.full():
         if not gate(cfg, stop_event):
             return False
         idle_sleep(cfg)
     if gate(cfg, stop_event):
-        image_q.put({"image_id": photo_id, "image_path": out_path, "meta": meta})
+        image_q.put({"image_id": photo_id, "image_path": out_path, "download_location": download_location, "meta": meta})
         return True
     return False
 
@@ -377,30 +392,38 @@ def upload_worker(
             upload_q.task_done()
             break
 
-        batch = [task]
+        # Prepare a batch of tasks
+        batch: List[Dict[str, Any]] = [task]
         if batch_size_eff > 1 and (upload_sample_pairs_fn is not None):
             try:
+                # Optimized batching: try to collect more tasks from the queue
+                # while respecting the batch_wait_ms timeout.
                 end_ts = None
                 if int(batch_wait_ms) > 0:
                     end_ts = time.time() + (float(batch_wait_ms) / 1000.0)
 
-                for _ in range(0, int(batch_size_eff) - 1):
+                while len(batch) < int(batch_size_eff):
                     if stop_event.is_set() or stop_requested(cfg):
                         break
+                    
                     nxt = None
                     if end_ts is None:
                         try:
                             nxt = upload_q.get_nowait()
                         except Exception:
-                            break
+                            break # No more tasks available immediately
                     else:
                         remaining = float(end_ts) - time.time()
                         if remaining <= 0:
-                            break
+                            break # Timeout reached
                         try:
                             nxt = upload_q.get(timeout=min(0.05, remaining))
                         except Exception:
+                            # This usually means a small wait didn't yield an item
+                            if time.time() >= end_ts:
+                                break
                             continue
+                    
                     if nxt is None:
                         try:
                             upload_q.task_done()
@@ -408,8 +431,11 @@ def upload_worker(
                             pass
                         break
                     batch.append(nxt)
-            except Exception:
-                batch = [task]
+            except Exception as e:
+                _log_exc(debug_fn, "Batch collection error", e)
+                # Fallback to single task if batching fails
+                if not batch:
+                    batch = [task]
 
         try:
             with lock:
@@ -427,10 +453,65 @@ def upload_worker(
                     upload_q.task_done()
                 continue
 
-            results = None
-            if (upload_sample_pairs_fn is not None) and len(batch) > 1:
-                results = upload_sample_pairs_fn(repo_id=cfg.hf_repo_id, tasks=batch)
+            valid = []
+            invalid = []
             for item in batch:
+                try:
+                    ip = str(item.get("image_path") or "")
+                    pp = str(item.get("ply_path") or "")
+                    dl = item.get("download_location")
+                    ok = True
+                    if (not ip) or (not pp):
+                        ok = False
+                    if ok and (not os.path.isfile(ip)):
+                        redl_ok = False
+                        try:
+                            if dl:
+                                os.makedirs(os.path.dirname(ip), exist_ok=True)
+                                redl_ok = bool(unsplash.download_image(str(dl), str(ip)))
+                        except Exception:
+                            redl_ok = False
+                        if not redl_ok:
+                            ok = False
+                    if ok and (not os.path.isfile(pp)):
+                        ok = False
+                    if ok:
+                        valid.append(item)
+                    else:
+                        invalid.append(item)
+                except Exception:
+                    invalid.append(item)
+
+            if invalid:
+                for item in invalid:
+                    try:
+                        iid = str(item.get("image_id") or "")
+                        ip = str(item.get("image_path") or "")
+                        pp = str(item.get("ply_path") or "")
+                        missing_img = (not ip) or (not os.path.isfile(ip))
+                        missing_ply = (not pp) or (not os.path.isfile(pp))
+                        r = 0
+                        try:
+                            r = int(item.get("_missing_retries", 0) or 0)
+                        except Exception:
+                            r = 0
+                        if missing_img and (not missing_ply) and r < 2 and item.get("download_location"):
+                            item["_missing_retries"] = int(r) + 1
+                            upload_q.put(item)
+                        else:
+                            debug_fn(
+                                f"上传跳过 | id={iid} | missing_image={int(bool(missing_img))} missing_ply={int(bool(missing_ply))}"
+                            )
+                    except Exception:
+                        pass
+
+            if not valid:
+                continue
+
+            results = None
+            if (upload_sample_pairs_fn is not None) and len(valid) > 1:
+                results = upload_sample_pairs_fn(repo_id=cfg.hf_repo_id, tasks=valid)
+            for item in valid:
                 info = None
                 if isinstance(results, dict) and results:
                     try:
@@ -586,6 +667,16 @@ def predict_worker(
             image_id = item["image_id"]
             image_path = item["image_path"]
             meta = item.get("meta") if isinstance(item, dict) else None
+            dl = item.get("download_location") if isinstance(item, dict) else None
+            _wait_for_api_slot()
+            
+            # Persistent queue logic: save task before processing
+            if index_sync is not None:
+                try:
+                    index_sync.add_to_queue(item)
+                except Exception:
+                    pass
+
             started_ts = time.time()
             try:
                 with lock:
@@ -598,6 +689,17 @@ def predict_worker(
                 f"{'SKIP_PREDICT' if bool(getattr(run_sharp_predict_once_fn, '_skip_predict', False)) else 'ml-sharp'} | id={image_id} | input={image_path}",
             )
             try:
+                try:
+                    if (not os.path.isfile(str(image_path))) and dl:
+                        try:
+                            os.makedirs(os.path.dirname(str(image_path)), exist_ok=True)
+                            unsplash.download_image(str(dl), str(image_path))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                if not os.path.isfile(str(image_path)):
+                    raise FileNotFoundError(str(image_path))
                 plys = run_sharp_predict_once_fn(image_path)
             except KeyboardInterrupt:
                 try:
@@ -640,13 +742,20 @@ def predict_worker(
                 )
             except Exception:
                 pass
+
+            # Task level upload attribute check
+            should_upload = cfg.hf_upload
+            if isinstance(item, dict) and "hf_upload" in item:
+                should_upload = bool(item["hf_upload"])
+
             for ply_path in plys or []:
-                if not cfg.hf_upload:
+                if not should_upload:
                     continue
                 payload = {
                     "image_id": image_id,
                     "image_path": image_path,
                     "ply_path": ply_path,
+                    "download_location": dl,
                     "meta": meta,
                 }
 
@@ -1184,9 +1293,19 @@ def download_loop(
                 image_q=image_q,
                 photo_id=str(photo_id),
                 out_path=str(out_path),
+                download_location=str(download_location),
                 meta=meta,
             ):
-                break
+                if (not gate(cfg, stop_event)) or stop_event.is_set() or stop_requested(cfg):
+                    break
+                try:
+                    if debug_fn:
+                        debug_fn(
+                            f"enqueue 跳过 | id={str(photo_id)} | path={str(out_path)} | exists={int(bool(os.path.exists(str(out_path))))} isfile={int(bool(os.path.isfile(str(out_path))))}"
+                        )
+                except Exception:
+                    pass
+                continue
 
             downloaded_images += 1
             try:
@@ -1272,34 +1391,61 @@ def download_loop(
 
 
 def run(
+    self,
     cfg: PipelineConfig,
     *,
-    checked_ids: set,
-    coord: hf_sync.LockDoneSync | None,
-    range_coord: hf_sync.RangeLockSync | None,
-    remote_done_fn,
-    index_sync,
-    upload_sample_pair_fn,
-    upload_sample_pairs_fn,
-    try_super_squash_fn,
-    run_sharp_predict_once_fn,
-    local_has_focal_exif_fn,
-    inject_focal_exif_if_missing_fn,
-    debug_fn,
+    checked_ids: Set[str],
+    coord: Optional[hf_sync.LockDoneSync],
+    range_coord: Optional[hf_sync.RangeLockSync],
+    remote_done_fn: Optional[Callable[[str], bool]],
+    index_sync: Optional[hf_index_sync.IndexSync],
+    upload_sample_pair_fn: Callable,
+    upload_sample_pairs_fn: Optional[Callable],
+    try_super_squash_fn: Callable,
+    run_sharp_predict_once_fn: Callable,
+    local_has_focal_exif_fn: Callable,
+    inject_focal_exif_if_missing_fn: Callable,
+    debug_fn: Optional[Callable[[str], None]],
 ):
     stop_event = threading.Event()
-
-    image_q = queue.Queue(maxsize=max(1, int(cfg.download_queue_max)))
-    upload_q = queue.Queue(maxsize=max(1, int(cfg.upload_queue_max)))
+    image_q = queue.Queue(maxsize=int(cfg.download_queue_max or 8))
+    upload_q = queue.Queue(maxsize=int(cfg.upload_queue_max or 256))
     counters = {
         "uploaded": 0,
-        "keep_plys": deque(),
         "predict_inflight": 0,
         "upload_inflight": 0,
         "predict_image_id": "",
         "predict_started_ts": 0.0,
     }
     lock = threading.Lock()
+
+    # Recovery Logic: Absorbing residual queue
+    if index_sync is not None:
+        residual_tasks = index_sync.load_queue()
+        if residual_tasks:
+            _debug(debug_fn, f"发现残留队列任务: {len(residual_tasks)} 个，正在检查并吸收...")
+            # Clear queue after loading to avoid duplicates if crash again before processing
+            index_sync.clear_queue()
+            
+            for task in residual_tasks:
+                image_id = task.get("image_id")
+                if not image_id:
+                    continue
+                
+                # Check if already done in HF or local
+                is_done = False
+                if coord is not None:
+                    is_done = coord.is_done(image_id)
+                elif image_id in checked_ids:
+                    is_done = True
+                
+                if not is_done:
+                    _debug(debug_fn, f"吸收残留任务 | id={image_id}")
+                    image_q.put(task)
+                else:
+                    _debug(debug_fn, f"残留任务已完成，跳过 | id={image_id}")
+
+    # ... (rest of the threads)
 
     def _snapshot():
         try:

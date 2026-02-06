@@ -25,6 +25,9 @@ configs:
 - Range done prefix: `ranges/progress/done_prefix.json` is used to avoid repo-wide listings of `ranges/done/`.
 - Ant-style range selection (optional): `ANT_ENABLED=1` with `ANT_CANDIDATE_RANGES`, `ANT_EPSILON`, `ANT_FRESH_SECS` to reduce contention across multiple clients.
 - HF upload batching (optional): `HF_UPLOAD_BATCH_SIZE=4` is recommended for throughput; small contributors can use `HF_UPLOAD_BATCH_SIZE=1`. `HF_UPLOAD_BATCH_WAIT_MS` controls the micro-batching wait window.
+- **Persistent queue recovery**: The pipeline now supports persistent queueing via `pending_queue.jsonl`. On startup, it automatically checks the HF repository and local index to absorb any unfinished tasks from previous runs.
+- **Runtime Queue Management**: You can manage the running pipeline's queue using the `queue_manager.py` tool. It allows adding tasks with custom properties (e.g., overriding HF upload) or listing/clearing pending tasks without stopping the pipeline.
+- **Optimized Token Rotation**: Unsplash API keys are now rotated more efficiently. For rate-limited keys, the pipeline will attempt to retry after 30 minutes (while maintaining a default 1-hour reset window), maximizing throughput.
 
 ## Data fields
 
@@ -88,3 +91,24 @@ One image to one ply, not high-quality, just for fun.
 - On Windows consoles, press `p` to toggle pause/resume (create/delete `PAUSE`), and press `q` to request stop (create `STOP`).
 - `Ctrl+C` requests stop (safe-point semantics): the pipeline will stop at the next check without hard-killing in-flight work.
 - Unexpected exceptions (especially in worker threads) are logged with full tracebacks to simplify debugging.
+
+## Advanced Usage
+
+### Runtime Queue Manager
+
+The `queue_manager.py` tool provides a way to interact with a running pipeline:
+
+```bash
+# List all pending tasks in the queue
+python -m sharp_dataset_pipeline.queue_manager --save-dir ./runs/your_run_id --action list
+
+# Manually add a task and specify whether to upload to HF
+python -m sharp_dataset_pipeline.queue_manager --save-dir ./runs/your_run_id --action add --image-id "example_id" --hf-upload false
+
+# Clear the persistent queue
+python -m sharp_dataset_pipeline.queue_manager --save-dir ./runs/your_run_id --action clear
+```
+
+### Modular Configuration
+
+Configuration has been moved to `sharp_dataset_pipeline/config.py`. It supports loading from `.env` and `.env.local` files, providing a cleaner way to manage environment-specific settings.
