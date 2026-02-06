@@ -718,10 +718,14 @@ def run_pipeline():
             try:
                 from scripts.register_unsplash_app import register_unsplash_app
                 import asyncio
-                new_key = asyncio.run(register_unsplash_app(f"sharp-ply-share-init-{int(time.time())}", headless=False))
+                app_name = f"sharp-ply-share-init-{int(time.time())}"
+                new_key = asyncio.run(register_unsplash_app(app_name, headless=False))
                 if new_key:
                     print(f"成功获取初始 Key: {new_key}")
+                    # 关键修复：立即同步到持久化存储和当前环境变量，防止后续逻辑判定为空
                     os.environ["UNSPLASH_API_KEYS"] = new_key
+                    # 同时手动触发一次持久化更新，确保 UNSPLASH_ACCESS_KEY.json 被创建/更新
+                    unsplash._update_persistence(new_key, app_name)
                 else:
                     print("自动注册未成功，请手动注册后重试。")
                     return

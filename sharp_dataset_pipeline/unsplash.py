@@ -225,6 +225,42 @@ def _active_app_name() -> str:
         return str(_APP_NAME or "").strip() or "sharp-ply-share"
 
 
+def _update_persistence(new_key: str, app_name: str):
+    """Update both .env and UNSPLASH_ACCESS_KEY.json with the new key."""
+    # 1. Update .env (existing logic)
+    _update_env_file(new_key)
+    
+    # 2. Update UNSPLASH_ACCESS_KEY.json
+    try:
+        json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "UNSPLASH_ACCESS_KEY.json")
+        data = []
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        import json
+                        data = json.loads(content)
+                        if isinstance(data, dict):
+                            data = [data]
+            except Exception:
+                data = []
+        
+        # Check if already exists
+        exists = any(item.get("access_key") == new_key or item.get("UNSPLASH_ACCESS_KEY") == new_key for item in data)
+        if not exists:
+            data.append({
+                "UNSPLASH_ACCESS_KEY": new_key,
+                "UNSPLASH_APP_NAME": app_name
+            })
+            with open(json_path, "w", encoding="utf-8") as f:
+                import json
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            _d(f"[AUTO_REG] 已更新 UNSPLASH_ACCESS_KEY.json 并添加新 Key.")
+    except Exception as e:
+        _d(f"[AUTO_REG] 更新 JSON 失败: {str(e)}")
+
+
 def _trigger_auto_registration():
     """Trigger the external registration script and wait for it to finish."""
     global _IS_REGISTERING
@@ -247,20 +283,15 @@ def _trigger_auto_registration():
         script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "register_unsplash_app.py")
         
         # Use a separate process to avoid event loop conflicts if we are in one
-        # Also, we want to run it in a way that might allow the user to see the browser if needed, 
-        # but since this is a background pipeline, we try headless=False first but it might fail 
-        # if no X server/UI is available. 
-        # The script is designed to handle this.
-        cmd = [sys.executable, script_path, app_name]
-        
-        # We need sys for sys.executable
         import sys
+        cmd = [sys.executable, script_path, app_name]
         
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
         
         if process.returncode == 0:
             # Extract access key from stdout if possible
+            import re
             match = re.search(r"Access Key: (\S+)", stdout)
             if match:
                 new_key = match.group(1).strip()
@@ -272,9 +303,12 @@ def _trigger_auto_registration():
                     _KEY_NEXT_API_ALLOWED_TS.append(0.0)
                     _KEY_API_BACKOFF_SECONDS.append(0.0)
                     _KEY_RATE_LIMITED.append(False)
+                    # 关键修复：确保全局速率限制标志被清除，以便程序能立即使用新 Key 继续
+                    global _rate_limited
+                    _rate_limited = False
                 
-                # Try to append to .env or config if possible (optional but good)
-                _update_env_file(new_key)
+                # Persistent storage
+                _update_persistence(new_key, app_name)
             else:
                 _d(f"[AUTO_REG] 脚本运行成功但未在输出中找到 Key. Output: {stdout[:200]}")
         else:
@@ -366,61 +400,57 @@ def _ensure_key_for_request() -> bool:
                 ts = float(_KEY_NEXT_API_ALLOWED_TS[i])
             except Exception:
                 ts = 0.0
+            
+            # 严格寻找可用的 Key
             if ts <= now:
                 best = i
                 best_ts = ts
+                # 找到可用的了，确保标志位正确
+                _KEY_RATE_LIMITED[i] = False
                 break
             
-            # 允许提前 30 分钟（1800秒）尝试已被限速的 key
-            # Unsplash 限速重置通常是一小时，但半小时可能已经恢复部分额度或重置
-            effective_ts = ts
-            if _KEY_RATE_LIMITED[i]:
-                effective_ts = ts - 1800.0
-
-            if best_ts is None or effective_ts < best_ts:
+            if best_ts is None or ts < best_ts:
                 best = i
-                best_ts = effective_ts
+                best_ts = ts
+
+        # 核心修复：只有当确确实实找不到任何现在就能用的 Key 时，才考虑是否注册
+        if best is not None and best_ts > now:
+            # 只有当最快可用的 Key 还需要等待超过 10 分钟时，才考虑注册新 Key
+            if (best_ts - now) > 600.0:
+                _d(f"[AUTO_REG] 现有 Key 均被限速且需等待较长时间 ({(best_ts-now)/60:.1f}min)，准备尝试注册。")
+                best = None # 触发注册逻辑
+            else:
+                _d(f"Unsplash 所有 Key 均在冷却，最快可用需等待 {int(best_ts - now)}s")
+                # 确保全局标志反映这个等待状态
+                _rate_limited = True
+                _next_api_allowed_ts = best_ts
+                return False
+        elif best is None:
+            # Key 池为空，触发注册
+            pass
 
         if best is None:
-            # Trigger auto-registration if all keys are exhausted
             _trigger_auto_registration()
+            # 注册后重新扫描一遍池子
+            now = time.time()
+            for i in range(len(_KEY_POOL)):
+                if float(_KEY_NEXT_API_ALLOWED_TS[i]) <= now:
+                    best = i
+                    _ACTIVE_KEY_IDX = i
+                    _rate_limited = False
+                    _next_api_allowed_ts = now
+                    return True
             
-            # Re-check pool after registration attempt
-            if _KEY_POOL:
-                for i in range(len(_KEY_POOL)):
-                    ts = float(_KEY_NEXT_API_ALLOWED_TS[i])
-                    if ts <= now:
-                        best = i
-                        best_ts = ts
-                        break
-            
-            if best is None:
-                best = 0
-                best_ts = float(now) + 3600.0
+            # 如果注册失败或新 Key 也不可用
+            _rate_limited = True
+            _next_api_allowed_ts = now + 3600.0
+            return False
 
-        prev_idx = int(cur)
-        _ACTIVE_KEY_IDX = int(best)
-        try:
-            if _debug is not None and int(prev_idx) != int(best):
-                _d(
-                    f"Unsplash key rotate | from_idx={int(prev_idx)} to_idx={int(best)} | next_allowed_in_s={round(max(0.0, float(best_ts or 0.0) - float(now)), 2)}"
-                )
-        except Exception:
-            pass
-        try:
-            if float(best_ts or 0.0) <= float(now):
-                _KEY_RATE_LIMITED[best] = False
-        except Exception:
-            pass
-
-        if float(best_ts or 0.0) <= float(now):
-            _rate_limited = False
-            _next_api_allowed_ts = float(now)
-            return True
-
-        _rate_limited = bool(_STOP_ON_RATE_LIMIT)
-        _next_api_allowed_ts = float(best_ts or (now + 3600.0))
-        return False
+        # 成功找到可用 Key
+        _ACTIVE_KEY_IDX = best
+        _rate_limited = False
+        _next_api_allowed_ts = now
+        return True
     except Exception:
         _rate_limited = bool(_STOP_ON_RATE_LIMIT)
         try:
