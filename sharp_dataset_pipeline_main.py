@@ -697,6 +697,42 @@ def _get_local_focal_mm(image_path: str):
 
 
 def run_pipeline():
+    # --- Onboarding: Unsplash Key Guidance ---
+    unsplash_keys_raw = os.getenv("UNSPLASH_API_KEYS", "").strip()
+    single_key = os.getenv("UNSPLASH_ACCESS_KEY", "").strip()
+    
+    if not unsplash_keys_raw and not single_key:
+        print("\n" + "="*60)
+        print("首次运行引导：获取 Unsplash API Key")
+        print("="*60)
+        print("你需要至少一个 Unsplash Access Key 才能下载图片。")
+        print("1. 访问 https://unsplash.com/oauth/applications 注册应用。")
+        print("2. 获取 Access Key 并填入 .env 文件的 UNSPLASH_API_KEYS 中。")
+        print("-" * 60)
+        
+        choice = input("是否允许系统在 Key 耗尽时自动为您注册新应用并获取 Key? (y/n, 默认 n): ").strip().lower()
+        if choice == 'y':
+            os.environ["ALLOW_AUTO_REG"] = "1"
+            # 尝试立即注册第一个 Key
+            print("正在尝试为您自动注册第一个 Unsplash Key...")
+            try:
+                from scripts.register_unsplash_app import register_unsplash_app
+                import asyncio
+                new_key = asyncio.run(register_unsplash_app(f"sharp-ply-share-init-{int(time.time())}", headless=False))
+                if new_key:
+                    print(f"成功获取初始 Key: {new_key}")
+                    os.environ["UNSPLASH_API_KEYS"] = new_key
+                else:
+                    print("自动注册未成功，请手动注册后重试。")
+                    return
+            except Exception as e:
+                print(f"自动注册过程出错: {e}")
+                return
+        else:
+            print("请手动配置 Key 后重新运行。")
+            return
+    # ----------------------------------------
+
     unsplash_key_pool = None
     if not str(UNSPLASH_ACCESS_KEY or "").strip():
         try:

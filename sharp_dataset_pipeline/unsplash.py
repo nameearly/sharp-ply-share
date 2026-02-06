@@ -228,6 +228,12 @@ def _active_app_name() -> str:
 def _trigger_auto_registration():
     """Trigger the external registration script and wait for it to finish."""
     global _IS_REGISTERING
+    
+    # 检查是否允许自动化注册
+    if str(os.getenv("ALLOW_AUTO_REG", "0")).strip() != "1":
+        _d("[AUTO_REG] 未获得自动化注册许可，跳过。请设置 ALLOW_AUTO_REG=1")
+        return
+
     with _AUTO_REG_LOCK:
         if _IS_REGISTERING:
             return
