@@ -1,4 +1,5 @@
 test/
+.unsplash_session/
 
 # Python
 __pycache__/
