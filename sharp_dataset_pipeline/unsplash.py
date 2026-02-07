@@ -15,6 +15,9 @@ import requests
 _AUTO_REG_LOCK = threading.Lock()
 _IS_REGISTERING = False
 
+_AUTO_REG_DISABLED_UNTIL_TS: float = 0.0
+_AUTO_REG_ACCOUNT_RATE_LIMITED: bool = False
+
 
 _UNSPLASH_ACCESS_KEY = None
 _APP_NAME = "sharp-ply-share"
@@ -111,6 +114,22 @@ def configure_unsplash(
     _next_api_allowed_ts = 0.0
     _api_backoff_seconds = 0.0
     _rate_limited = False
+
+
+def resolve_unsplash_keys_json_path(*, base_dir: Optional[str] = None) -> str:
+    try:
+        p = str(os.getenv("UNSPLASH_ACCESS_KEY_JSON", "") or "").strip()
+        if p:
+            return os.path.abspath(p)
+    except Exception:
+        pass
+
+    try:
+        if base_dir is None:
+            base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        return os.path.abspath(os.path.join(str(base_dir), "UNSPLASH_ACCESS_KEY.json"))
+    except Exception:
+        return os.path.abspath("UNSPLASH_ACCESS_KEY.json")
 
 
 def load_unsplash_key_pool(json_path: str, *, default_app_name: Optional[str] = None) -> List[Dict[str, str]]:
@@ -236,7 +255,7 @@ def _update_persistence(new_key: str, app_name: str):
     
     # 2. Update UNSPLASH_ACCESS_KEY.json
     try:
-        json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "UNSPLASH_ACCESS_KEY.json")
+        json_path = resolve_unsplash_keys_json_path()
         data = []
         if os.path.exists(json_path):
             try:
@@ -268,6 +287,16 @@ def _update_persistence(new_key: str, app_name: str):
 def _trigger_auto_registration():
     """Trigger the external registration script and wait for it to finish."""
     global _IS_REGISTERING
+
+    now = time.time()
+    try:
+        if float(_AUTO_REG_DISABLED_UNTIL_TS) > float(now):
+            _d(
+                f"[AUTO_REG] 已暂停自动注册（疑似账号级限流），需等待 {int(float(_AUTO_REG_DISABLED_UNTIL_TS) - float(now))}s"
+            )
+            return
+    except Exception:
+        pass
     
     # 检查是否允许自动化注册 - 增加从 .env 实时读取逻辑，并确保区分注释和实际值
     allow_reg = str(os.getenv("ALLOW_AUTO_REG", "0")).strip()
@@ -327,7 +356,14 @@ def _trigger_auto_registration():
                 
                 # Add to pool
                 with _AUTO_REG_LOCK:
-                    _KEY_POOL.append({"access_key": new_key, "app_name": app_name})
+                    _KEY_POOL.append(
+                        {
+                            "access_key": new_key,
+                            "app_name": app_name,
+                            "_auto_registered_ts": time.time(),
+                            "_auto_registered_new": True,
+                        }
+                    )
                     _KEY_NEXT_API_ALLOWED_TS.append(0.0)
                     _KEY_API_BACKOFF_SECONDS.append(0.0)
                     _KEY_RATE_LIMITED.append(False)
@@ -450,8 +486,14 @@ def _ensure_key_for_request() -> bool:
             wait_time = best_ts - now
             # 降低触发阈值：只要所有 Key 都不可用，就立即触发自动注册
             # 之前的 600s 阈值太保守，导致用户觉得系统没有按预期自动扩展
-            _d(f"[AUTO_REG] 现有 Key 均被限速 (需等待 {int(wait_time)}s)，触发自动注册新 Key...")
-            _trigger_auto_registration()
+            _d(f"[AUTO_REG] 现有 Key 均被限速 (需等待 {int(wait_time)}s)，尝试自动注册新 Key...")
+            try:
+                if float(_AUTO_REG_DISABLED_UNTIL_TS) > float(now):
+                    _d("[AUTO_REG] 自动注册已暂停（疑似账号级限流），改为等待现有 Key 复活")
+                else:
+                    _trigger_auto_registration()
+            except Exception:
+                _trigger_auto_registration()
             
             # 注册后立即重新检查
             now_after = time.time()
@@ -557,6 +599,12 @@ def _note_api_request_done(min_interval_s=0.75):
             _KEY_API_BACKOFF_SECONDS[idx] = 0.0
             _KEY_NEXT_API_ALLOWED_TS[idx] = max(float(_KEY_NEXT_API_ALLOWED_TS[idx]), float(_next_api_allowed_ts))
             _KEY_RATE_LIMITED[idx] = False
+            try:
+                obj = _KEY_POOL[idx]
+                if isinstance(obj, dict) and obj.get("_auto_registered_new") is True:
+                    obj["_auto_registered_new"] = False
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -593,6 +641,22 @@ def _note_api_rate_limited(response):
             _KEY_NEXT_API_ALLOWED_TS[idx] = max(float(_KEY_NEXT_API_ALLOWED_TS[idx]), float(_next_api_allowed_ts))
             _KEY_API_BACKOFF_SECONDS[idx] = float(_api_backoff_seconds)
             _KEY_RATE_LIMITED[idx] = True
+
+            try:
+                obj = _KEY_POOL[idx]
+                if isinstance(obj, dict) and obj.get("_auto_registered_new") is True:
+                    reg_ts = float(obj.get("_auto_registered_ts") or 0.0)
+                    age_s = time.time() - reg_ts
+                    if reg_ts > 0 and age_s <= 180.0:
+                        global _AUTO_REG_DISABLED_UNTIL_TS, _AUTO_REG_ACCOUNT_RATE_LIMITED
+                        _AUTO_REG_ACCOUNT_RATE_LIMITED = True
+                        _AUTO_REG_DISABLED_UNTIL_TS = max(float(_AUTO_REG_DISABLED_UNTIL_TS), float(_next_api_allowed_ts))
+                        _d(
+                            f"[AUTO_REG] 新注册 Key 立即被限速（age={int(age_s)}s），疑似账号级限流：暂停自动注册直至 {datetime.fromtimestamp(float(_AUTO_REG_DISABLED_UNTIL_TS))}"
+                        )
+            except Exception:
+                pass
+
             _ensure_key_for_request()
     except Exception:
         pass

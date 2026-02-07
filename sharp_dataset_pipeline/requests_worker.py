@@ -711,19 +711,21 @@ def run_once():
             index_sync_obj = None
 
     unsplash_key_pool = None
-    if not str(os.getenv("UNSPLASH_ACCESS_KEY", "") or "").strip():
-        keys_path = _env_str(
-            "UNSPLASH_ACCESS_KEY_JSON",
-            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "UNSPLASH_ACCESS_KEY.json"),
+    try:
+        keys_path = unsplash.resolve_unsplash_keys_json_path(
+            base_dir=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
         unsplash_key_pool = unsplash.load_unsplash_key_pool(
             keys_path,
             default_app_name=_env_str("UNSPLASH_APP_NAME", "sharp-ply-share"),
         )
+    except Exception:
+        unsplash_key_pool = None
 
-    if str(os.getenv("UNSPLASH_ACCESS_KEY", "") or "").strip() or unsplash_key_pool:
+    unsplash_access_key = str(os.getenv("UNSPLASH_ACCESS_KEY", "") or "").strip()
+    if unsplash_key_pool or unsplash_access_key:
         unsplash.configure_unsplash(
-            access_key=(unsplash_key_pool if unsplash_key_pool else os.getenv("UNSPLASH_ACCESS_KEY", "")),
+            access_key=(unsplash_key_pool if unsplash_key_pool else unsplash_access_key),
             app_name=_env_str("UNSPLASH_APP_NAME", "sharp-ply-share"),
             api_base=_env_str("UNSPLASH_API_BASE", "https://api.unsplash.com"),
             per_page=_env_int("PER_PAGE", 10),

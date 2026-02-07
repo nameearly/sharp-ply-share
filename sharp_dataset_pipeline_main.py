@@ -814,21 +814,17 @@ def run_pipeline():
     # ----------------------------------------
 
     unsplash_key_pool = None
-    if not str(UNSPLASH_ACCESS_KEY or "").strip():
-        try:
-            keys_path = os.getenv(
-                "UNSPLASH_ACCESS_KEY_JSON",
-                os.path.join(os.path.dirname(__file__), "UNSPLASH_ACCESS_KEY.json"),
-            )
-            unsplash_key_pool = unsplash.load_unsplash_key_pool(
-                keys_path,
-                default_app_name=str(APP_NAME or "").strip() or "sharp-ply-share",
-            )
-        except Exception:
-            unsplash_key_pool = None
+    try:
+        keys_path = unsplash.resolve_unsplash_keys_json_path(base_dir=os.path.dirname(__file__))
+        unsplash_key_pool = unsplash.load_unsplash_key_pool(
+            keys_path,
+            default_app_name=str(APP_NAME or "").strip() or "sharp-ply-share",
+        )
+    except Exception:
+        unsplash_key_pool = None
 
-    if (not str(UNSPLASH_ACCESS_KEY or "").strip()) and (not unsplash_key_pool):
-        raise RuntimeError("UNSPLASH_ACCESS_KEY 为空，且未能从 UNSPLASH_ACCESS_KEY.json 加载")
+    if (not unsplash_key_pool) and (not str(UNSPLASH_ACCESS_KEY or "").strip()):
+        raise RuntimeError("UNSPLASH_ACCESS_KEY_JSON/UNSPLASH_ACCESS_KEY.json 为空，且 UNSPLASH_ACCESS_KEY 也为空")
 
     if bool(REQUIRE_HF_UPLOAD) and (not bool(HF_UPLOAD)):
         raise RuntimeError("REQUIRE_HF_UPLOAD=1 但 HF_UPLOAD=0（没有上传 HF 仓库就等于白跑）")

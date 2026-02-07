@@ -25,6 +25,11 @@ _debug = None
 _hf_exists_cache_lock = threading.Lock()
 _hf_exists_cache = {}
 
+_COWORKER_DISCUSSION_TITLE = "coworker registration"
+_COWORKER_DISCUSSION_BODY = "for automation"
+_coworker_discussion_num_lock = threading.Lock()
+_coworker_discussion_num: int | None = None
+
 
 def _hf_hub_download_quiet(*, repo_id: str, filename: str):
     from huggingface_hub import hf_hub_download
@@ -89,6 +94,124 @@ def _d(msg: str) -> None:
         _debug(msg)
     except Exception:
         pass
+
+
+def _hf_api_with_token_if_available():
+    try:
+        from huggingface_hub import HfApi
+
+        token = str(
+            os.getenv("HF_TOKEN", "")
+            or os.getenv("HUGGINGFACE_HUB_TOKEN", "")
+            or os.getenv("HUGGING_FACE_HUB_TOKEN", "")
+            or ""
+        ).strip()
+        if token:
+            return HfApi(token=token)
+    except Exception:
+        return None
+    return None
+
+
+def _hf_get_or_create_coworker_discussion_num(repo_id: str) -> int | None:
+    global _coworker_discussion_num
+
+    try:
+        with _coworker_discussion_num_lock:
+            if _coworker_discussion_num is not None:
+                return int(_coworker_discussion_num)
+    except Exception:
+        pass
+
+    api = _hf_api_with_token_if_available()
+    if api is None:
+        return None
+
+    try:
+        for d in api.get_repo_discussions(
+            repo_id=str(repo_id),
+            repo_type=_HF_REPO_TYPE,
+            discussion_type="discussion",
+            discussion_status="open",
+        ):
+            try:
+                if str(getattr(d, "title", "") or "").strip() != _COWORKER_DISCUSSION_TITLE:
+                    continue
+                num = int(getattr(d, "num"))
+                with _coworker_discussion_num_lock:
+                    _coworker_discussion_num = int(num)
+                return int(num)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    try:
+        created = api.create_discussion(
+            repo_id=str(repo_id),
+            repo_type=_HF_REPO_TYPE,
+            title=_COWORKER_DISCUSSION_TITLE,
+            description=_COWORKER_DISCUSSION_BODY,
+        )
+        num = int(getattr(created, "num"))
+        with _coworker_discussion_num_lock:
+            _coworker_discussion_num = int(num)
+        return int(num)
+    except Exception as e:
+        _d(f"HF create coworker discussion failed（可忽略） | err={type(e).__name__}: {str(e)}")
+        return None
+
+
+def _hf_post_coworker_discussion_event(
+    repo_id: str,
+    *,
+    owner: str,
+    session_id: str,
+    kind: str,
+    ttl_s: float | None = None,
+    ts: float | None = None,
+) -> bool:
+    api = _hf_api_with_token_if_available()
+    if api is None:
+        return False
+
+    num = _hf_get_or_create_coworker_discussion_num(str(repo_id))
+    if num is None:
+        return False
+
+    now = time.time() if ts is None else float(ts)
+    payload = {
+        "v": 1,
+        "kind": str(kind),
+        "owner": str(owner),
+        "session": str(session_id),
+        "ts": float(now),
+    }
+    if ttl_s is not None:
+        try:
+            payload["ttl_s"] = float(ttl_s)
+        except Exception:
+            pass
+
+    try:
+        api.create_discussion_comment(
+            repo_id=str(repo_id),
+            repo_type=_HF_REPO_TYPE,
+            discussion_num=int(num),
+            comment=json.dumps(payload, ensure_ascii=False),
+        )
+        return True
+    except Exception as e:
+        _d(f"HF coworker discussion comment failed（可忽略） | kind={str(kind)} owner={str(owner)} | err={type(e).__name__}: {str(e)}")
+        return False
+
+
+def _coworker_event_pr_enabled() -> bool:
+    try:
+        v = str(os.getenv("HF_COWORKER_EVENT_PR", "") or "").strip().lower()
+        return v in ("1", "true", "yes", "y", "on")
+    except Exception:
+        return False
 
 
 def hf_locks_repo_path(image_id: str) -> str:
@@ -1027,13 +1150,24 @@ class AdaptiveLockDoneSync:
                 self._presence_started = True
         except Exception:
             pass
+        if _coworker_event_pr_enabled():
+            try:
+                _hf_try_write_coworker_event_pr(
+                    self.repo_id,
+                    owner=str(self.owner),
+                    session_id=str(self.session_id),
+                    kind="start",
+                    extra={"ttl_s": float(self.coworker_ttl_s)},
+                )
+            except Exception:
+                pass
         try:
-            _hf_try_write_coworker_event_pr(
+            _hf_post_coworker_discussion_event(
                 self.repo_id,
                 owner=str(self.owner),
                 session_id=str(self.session_id),
                 kind="start",
-                extra={"ttl_s": float(self.coworker_ttl_s)},
+                ttl_s=float(self.coworker_ttl_s),
             )
         except Exception:
             pass
@@ -1050,13 +1184,24 @@ class AdaptiveLockDoneSync:
                 self._presence_closed = True
         except Exception:
             pass
+        if _coworker_event_pr_enabled():
+            try:
+                _hf_try_write_coworker_event_pr(
+                    self.repo_id,
+                    owner=str(self.owner),
+                    session_id=str(self.session_id),
+                    kind="end",
+                    extra={"ttl_s": float(self.coworker_ttl_s)},
+                )
+            except Exception:
+                pass
         try:
-            _hf_try_write_coworker_event_pr(
+            _hf_post_coworker_discussion_event(
                 self.repo_id,
                 owner=str(self.owner),
                 session_id=str(self.session_id),
                 kind="end",
-                extra={"ttl_s": float(self.coworker_ttl_s)},
+                ttl_s=float(self.coworker_ttl_s),
             )
         except Exception:
             pass
@@ -1081,13 +1226,24 @@ class AdaptiveLockDoneSync:
                 return
         except Exception:
             pass
+        if _coworker_event_pr_enabled():
+            try:
+                _hf_try_write_coworker_event_pr(
+                    self.repo_id,
+                    owner=str(self.owner),
+                    session_id=str(self.session_id),
+                    kind="heartbeat",
+                    extra={"ttl_s": float(self.coworker_ttl_s)},
+                )
+            except Exception:
+                pass
         try:
-            _hf_try_write_coworker_event_pr(
+            _hf_post_coworker_discussion_event(
                 self.repo_id,
                 owner=str(self.owner),
                 session_id=str(self.session_id),
                 kind="heartbeat",
-                extra={"ttl_s": float(self.coworker_ttl_s)},
+                ttl_s=float(self.coworker_ttl_s),
             )
         except Exception:
             pass

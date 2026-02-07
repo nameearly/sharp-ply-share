@@ -43,7 +43,32 @@ jobs:
           import os
           import re
           import sys
+          import time
+          from datetime import datetime, timezone
           from huggingface_hub import HfApi
+
+
+          def ensure_coworker_discussion(api: HfApi, *, repo_id: str, repo_type: str) -> None:
+              title = "coworker registration"
+              body = "for automation"
+              try:
+                  for d in api.get_repo_discussions(
+                      repo_id=repo_id,
+                      repo_type=repo_type,
+                      discussion_type="discussion",
+                      discussion_status="open",
+                  ):
+                      try:
+                          if str(getattr(d, "title", "") or "").strip() == title:
+                              return
+                      except Exception:
+                          continue
+              except Exception:
+                  pass
+              try:
+                  api.create_discussion(repo_id=repo_id, repo_type=repo_type, title=title, description=body)
+              except Exception as e:
+                  print(f"WARN: create coworker discussion failed: {e}")
 
 
           def _env_str(k: str, default: str = "") -> str:
@@ -109,6 +134,63 @@ jobs:
                   return 2
 
               api = HfApi(token=token)
+
+              ensure_coworker_discussion(api, repo_id=repo_id, repo_type=repo_type)
+
+              def cleanup_expired_coworker_prs() -> None:
+                  try:
+                      ttl_s = float(os.getenv("HF_COWORKER_PR_TTL_SECS", "1800") or "1800")
+                  except Exception:
+                      ttl_s = 1800.0
+                  if ttl_s <= 0:
+                      return
+
+                  pat = re.compile(r"^coworker\s+(start|heartbeat|end)\b", flags=re.IGNORECASE)
+                  now = time.time()
+                  closed = 0
+                  for d in api.get_repo_discussions(
+                      repo_id=repo_id,
+                      repo_type=repo_type,
+                      discussion_type="pull_request",
+                      discussion_status="open",
+                  ):
+                      try:
+                          num = int(getattr(d, "num"))
+                          title = str(getattr(d, "title", "") or "").strip()
+                          if not pat.search(title):
+                              continue
+
+                          created_ts = None
+                          try:
+                              det = api.get_discussion_details(repo_id=repo_id, repo_type=repo_type, discussion_num=num)
+                              created_at = getattr(det, "created_at", None)
+                              if created_at:
+                                  s = str(created_at)
+                                  # Expect ISO format.
+                                  dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                                  if dt.tzinfo is None:
+                                      dt = dt.replace(tzinfo=timezone.utc)
+                                  created_ts = dt.timestamp()
+                          except Exception:
+                              created_ts = None
+
+                          if created_ts is not None and (now - float(created_ts)) < float(ttl_s):
+                              continue
+
+                          api.change_discussion_status(
+                              repo_id=repo_id,
+                              repo_type=repo_type,
+                              discussion_num=num,
+                              new_status="closed",
+                              comment="Archived: coworker coordination moved to discussion 'coworker registration'.",
+                          )
+                          closed += 1
+                      except Exception as e:
+                          print(f"WARN: close coworker PR failed: {e}")
+                  if closed:
+                      print(f"Closed expired coworker PRs: {closed}")
+
+              cleanup_expired_coworker_prs()
 
               def update_coworkers_active() -> None:
                   ttl_s = 1800.0

@@ -1,4 +1,5 @@
 test/
+.unsplash_session/
 
 # Python
 __pycache__/
@@ -15,6 +16,11 @@ venv/
 # Secrets (do not commit)
 UNSPLASH_ACCESS_KEY.json
 !UNSPLASH_ACCESS_KEY.json.example
+
+# Local logs / debug artifacts
+unsplash_keys_log.txt
+process_exception.png
+process_fail.png
 
 # Node
 node_modules/
