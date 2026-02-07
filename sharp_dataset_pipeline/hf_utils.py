@@ -1,6 +1,29 @@
 import os
 
 
+def file_size(path: str) -> int:
+    try:
+        return int(os.path.getsize(str(path)))
+    except Exception:
+        return 0
+
+
+def sha256_file(path: str) -> str:
+    try:
+        import hashlib
+
+        h = hashlib.sha256()
+        with open(str(path), "rb") as f:
+            while True:
+                b = f.read(1024 * 1024)
+                if not b:
+                    break
+                h.update(b)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
 def env_str(name: str, default: str = "") -> str:
     try:
         v = os.getenv(name)

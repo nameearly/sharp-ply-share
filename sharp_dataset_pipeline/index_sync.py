@@ -34,6 +34,15 @@ class IndexSync:
             os.path.basename(self.repo_path) if self.repo_path else "train.jsonl",
         )
 
+        self.manifest_repo_path = str(os.getenv("HF_MANIFEST_REPO_PATH", "data/manifest.jsonl") or "").strip().lstrip("/")
+        self.manifest_local_path = os.path.join(self.save_dir, os.path.basename(self.manifest_repo_path) if self.manifest_repo_path else "manifest.jsonl")
+        try:
+            self.write_manifest = str(os.getenv("HF_WRITE_MANIFEST", "1") or "1").strip().lower() in ("1", "true", "yes", "y")
+        except Exception:
+            self.write_manifest = True
+        self.manifest_pending = 0
+        self._manifest_index: set[str] = set()
+
         self.hf_upload = bool(hf_upload)
         self.hf_index_flush_every = int(hf_index_flush_every)
         self.hf_index_flush_secs = float(hf_index_flush_secs)
@@ -122,6 +131,7 @@ class IndexSync:
         self._init_from_remote()
         changed = self._sanitize_local_index()
         self._load_indexed_ids()
+        self._load_manifest_index()
         try:
             if changed:
                 self.pending = max(int(self.pending), 1)
@@ -135,6 +145,73 @@ class IndexSync:
                 self.debug_fn(msg)
         except Exception:
             return
+
+    def _iter_manifest_keys(self, path: str):
+        try:
+            if not path or (not os.path.exists(path)):
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    s = line.strip()
+                    if not s:
+                        continue
+                    try:
+                        obj = json.loads(s)
+                    except Exception:
+                        continue
+                    p = str(obj.get("path") or "").strip().lstrip("/")
+                    sha = str(obj.get("sha256") or "").strip().lower()
+                    if p and sha:
+                        yield f"{p}|{sha}"
+        except Exception:
+            return
+
+    def _load_manifest_index(self):
+        try:
+            if not bool(getattr(self, "write_manifest", True)):
+                return
+            if not os.path.exists(self.manifest_local_path):
+                return
+            for k in self._iter_manifest_keys(self.manifest_local_path):
+                self._manifest_index.add(str(k))
+        except Exception:
+            return
+
+    def add_manifest_items(self, items: list[dict]):
+        if not bool(getattr(self, "write_manifest", True)):
+            return
+        if not isinstance(items, list) or (not items):
+            return
+        with self.lock:
+            try:
+                if not os.path.exists(os.path.dirname(self.manifest_local_path)):
+                    os.makedirs(os.path.dirname(self.manifest_local_path), exist_ok=True)
+            except Exception:
+                pass
+            try:
+                with open(self.manifest_local_path, "a", encoding="utf-8") as f:
+                    for it in items:
+                        if not isinstance(it, dict):
+                            continue
+                        p = str(it.get("path") or "").strip().lstrip("/")
+                        sha = str(it.get("sha256") or "").strip().lower()
+                        if not p or not sha:
+                            continue
+                        key = f"{p}|{sha}"
+                        if key in self._manifest_index:
+                            continue
+                        obj = {
+                            "path": p,
+                            "bytes": int(it.get("bytes") or 0),
+                            "sha256": sha,
+                        }
+                        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                        self._manifest_index.add(key)
+                        self.manifest_pending += 1
+            except Exception as e:
+                self._print(f"写入本地 manifest 失败 | err={e}")
+
+        self.maybe_flush(False)
 
     def _normalize_list_str(self, v):
         if v is None:
@@ -682,12 +759,10 @@ class IndexSync:
         try:
             with self.lock:
                 now = time.time()
-                if int(self.pending) <= 0:
+                if int(self.pending) <= 0 and (not (bool(getattr(self, "write_manifest", True)) and int(getattr(self, "manifest_pending", 0)) > 0)):
                     return
                 if not force:
-                    if self.pending < int(self.hf_index_flush_every) and (now - float(self.last_flush_ts)) < float(
-                        self.hf_index_flush_secs
-                    ):
+                    if int(self.pending) < int(self.hf_index_flush_every) and (now - float(self.last_flush_ts)) < float(self.hf_index_flush_secs):
                         return
 
                 if not os.path.isfile(self.local_path):
@@ -698,6 +773,11 @@ class IndexSync:
                 api = HfApi()
                 self._sanitize_local_index()
                 ops = [CommitOperationAdd(path_in_repo=self.repo_path, path_or_fileobj=self.local_path)]
+                try:
+                    if bool(getattr(self, "write_manifest", True)) and self.manifest_repo_path and os.path.isfile(self.manifest_local_path):
+                        ops.append(CommitOperationAdd(path_in_repo=self.manifest_repo_path, path_or_fileobj=self.manifest_local_path))
+                except Exception:
+                    pass
                 try:
                     api.create_commit(
                         repo_id=self.repo_id,
@@ -717,6 +797,7 @@ class IndexSync:
                     )
 
                 self.pending = 0
+                self.manifest_pending = 0
                 self.last_flush_ts = now
         except Exception as e:
             self._print(f"HF index 上传失败（可忽略） | err={str(e)}")

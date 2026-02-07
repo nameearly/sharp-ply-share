@@ -587,7 +587,39 @@ def upload_worker(
                             pass
                         if isinstance(meta, dict):
                             row.update(meta)
+
+                        try:
+                            if isinstance(info, dict):
+                                row["jpg_sha256"] = str(info.get("jpg_sha256") or "")
+                                row["ply_sha256"] = str(info.get("ply_sha256") or "")
+                                row["spz_sha256"] = str(info.get("spz_sha256") or "")
+                                row["jpg_bytes"] = int(info.get("jpg_bytes") or 0)
+                                row["ply_bytes"] = int(info.get("ply_bytes") or 0)
+                                row["spz_bytes"] = int(info.get("spz_bytes") or 0)
+                        except Exception:
+                            pass
+
                         index_sync.add_row(row)
+
+                        try:
+                            if isinstance(info, dict) and hasattr(index_sync, "add_manifest_items"):
+                                m_items = []
+                                ip = str(info.get("image_path") or "").strip().lstrip("/")
+                                if ip:
+                                    m_items.append({"path": ip, "bytes": int(info.get("jpg_bytes") or 0), "sha256": str(info.get("jpg_sha256") or "").strip().lower()})
+                                pp = str(info.get("ply_path") or "").strip().lstrip("/")
+                                if pp:
+                                    m_items.append({"path": pp, "bytes": int(info.get("ply_bytes") or 0), "sha256": str(info.get("ply_sha256") or "").strip().lower()})
+                                sp = str(info.get("spz_path") or "").strip().lstrip("/")
+                                if sp:
+                                    m_items.append({"path": sp, "bytes": int(info.get("spz_bytes") or 0), "sha256": str(info.get("spz_sha256") or "").strip().lower()})
+                                if m_items:
+                                    try:
+                                        index_sync.add_manifest_items(m_items)
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
                     except Exception as e:
                         _log_exc(debug_fn, f"写入 index 失败 | id={str(item.get('image_id'))}", e)
 

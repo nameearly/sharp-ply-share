@@ -39,6 +39,11 @@ Outputs are organized under:
 - `runs/<RUN_ID>/gaussians/` generated `.ply` files
 - `runs/<RUN_ID>/gpu_mem_log.csv` (optional, when `LOG_GPU_MEM=1`)
 
+Dataset repo layout (Hugging Face):
+
+- Index: `data/train.jsonl`
+- Manifest (optional): `data/manifest.jsonl` storing per-asset `{path, bytes, sha256}` for fast verification and batch pulls.
+
 
 ## Pause / Stop control
 
@@ -119,10 +124,20 @@ Recommended:
 - `HF_INDEX_REPO_PATH`: JSONL index path in repo (default: `data/train.jsonl`)
 - `HF_INDEX_REFRESH_SECS`: refresh interval (index backend) (default: `300`)
 
+Manifest (optional):
+
+- `HF_WRITE_MANIFEST`: enable writing/updating manifest file (default: `1`)
+- `HF_MANIFEST_REPO_PATH`: manifest path in repo (default: `data/manifest.jsonl`)
+
 Index preview column:
 
 - `image`: full HF resolve URL for the JPG (Dataset Viewer uses this to render previews).
 - `image_id` remains the stable identifier used for dedup/locks/done checks. Do not replace it with a URL.
+
+Verification fields (optional):
+
+- `jpg_sha256` / `ply_sha256` / `spz_sha256`
+- `jpg_bytes` / `ply_bytes` / `spz_bytes`
 
 Index JSONL compact mode:
 

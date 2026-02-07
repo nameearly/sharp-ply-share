@@ -6,53 +6,6 @@ configs:
   - split: train
     path: "data/train.jsonl"
 ---
-## Data files
-
-- The Dataset Viewer is configured to read `data/train.jsonl` (see the `configs:` section in the YAML header above).
-- The actual assets (JPG / PLY / SPZ) are stored under `unsplash/<image_id>/`.
-- The `image` field in `data/train.jsonl` stores the full HF `resolve` URL of the JPG for Dataset Viewer previews. `image_id` stays as the stable identifier.
-
-## Links
-
-- GitHub (pipeline code): https://github.com/nameearly/sharp-ply-share
-- Hugging Face (dataset): https://huggingface.co/datasets/eatmorefruit/sharp-ply-share
-
-## Pipeline coordination / dedup (for multi-client runs)
-
-- Prefetch buffer: `MAX_CANDIDATES` controls how many images the downloader will try to keep queued for inference (same as `DOWNLOAD_QUEUE_MAX` unless you override it explicitly). `MAX_IMAGES` limits how many are actually downloaded/processed.
-- Remote done check: `HF_DONE_BACKEND=index` uses the HF index file (`data/train.jsonl`) as a local in-memory done set, and periodically refreshes it for collaborator correctness (`HF_INDEX_REFRESH_SECS`).
-- Range locks (list + oldest): range coordination is stored on HF under `ranges/locks`, `ranges/done`, and `ranges/progress`.
-- Range done prefix: `ranges/progress/done_prefix.json` is used to avoid repo-wide listings of `ranges/done/`.
-- Ant-style range selection (optional): `ANT_ENABLED=1` with `ANT_CANDIDATE_RANGES`, `ANT_EPSILON`, `ANT_FRESH_SECS` to reduce contention across multiple clients.
-- HF upload batching (optional): `HF_UPLOAD_BATCH_SIZE=4` is recommended for throughput; small contributors can use `HF_UPLOAD_BATCH_SIZE=1`. `HF_UPLOAD_BATCH_WAIT_MS` controls the micro-batching wait window.
-- **Persistent queue recovery**: The pipeline now supports persistent queueing via `pending_queue.jsonl`. On startup, it automatically checks the HF repository and local index to absorb any unfinished tasks from previous runs.
-- **Runtime Queue Management**: You can manage the running pipeline's queue using the `queue_manager.py` tool. It allows adding tasks with custom properties (e.g., overriding HF upload) or listing/clearing pending tasks without stopping the pipeline.
-- **Optimized Token Rotation**: Unsplash API keys are now rotated more efficiently. For rate-limited keys, the pipeline will attempt to retry after 30 minutes (while maintaining a default 1-hour reset window), maximizing throughput.
-- **Hugging Face Rate Limit Protection**: The pipeline now implements a multi-layer protection mechanism against HF API limits:
-    - **Global Commit Circuit Breaker**: Automatically suppresses non-critical metadata commits for 1 hour when the repository commit limit (128/h) is reached.
-    - **Aggressive Throttling**: Progress and heartbeat sync frequency is reduced to once every 30 minutes.
-    - **Local Caching**: Range lock status and progress are cached locally to minimize redundant API calls.
-    - **Robust Backoff**: Centralized commit logic with exponential backoff and jitter for all HF operations.
-
-## Data fields
-
-Each row in `data/train.jsonl` is a JSON object with stable (string) types for fields that commonly drift (to keep the Dataset Viewer working reliably).
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `image` | `string` | Full HF resolve URL for the JPG (used by Dataset Viewer to preview images). |
-| `image_id` | `string` | Unsplash photo id. Also used as the directory name for assets. |
-| `gsplat_share_id` | `string` | Share id on gsplat.org (may be empty). |
-| `gsplat_order_id` | `string` | Order id on gsplat.org (may be empty). |
-| `gsplat_model_file_url` | `string` | gsplat.org model file token (normalized): for example `1770129991964_T8LMLFAy` (may be empty). |
-| `tags` | `string` | Space-separated tags (derived from Unsplash tags). |
-| `topics` | `string` | Space-separated topics (often empty). |
-| `tags_text` | `string` | Same as `tags` (kept for backwards compatibility / full-text search). |
-| `topics_text` | `string` | Same as `topics`. |
-| `alt_description` | `string` | Unsplash `alt_description` (empty string if missing). |
-| `description` | `string` | Unsplash `description` (empty string if missing). |
-| `created_at` | `string` | Unsplash `created_at` timestamp (ISO8601). |
-| `user_username` | `string` | Unsplash author username. |
 
 ## Quick usage
 
@@ -74,6 +27,45 @@ If you need the original gsplat share file path, reconstruct:
 - `gsplat_model_file_url_raw`: `/share/file/<gsplat_model_file_url>.ply`
 
 `<image_id>.ply`: made by ml-sharp (https://github.com/apple/ml-sharp) from the corresponding Unsplash photo page `https://unsplash.com/photos/<image_id>`.
+
+## Data files
+
+- The Dataset Viewer is configured to read `data/train.jsonl` (see the `configs:` section in the YAML header above).
+- The actual assets (JPG / PLY / SPZ) are stored under `unsplash/<image_id>/`.
+- The `image` field in `data/train.jsonl` stores the full HF `resolve` URL of the JPG for Dataset Viewer previews. `image_id` stays as the stable identifier.
+- `data/manifest.jsonl` stores per-asset `{path, bytes, sha256}` for fast verification and batch pulls.
+
+## Data fields
+
+Each row in `data/train.jsonl` is a JSON object with stable (string) types for fields that commonly drift (to keep the Dataset Viewer working reliably).
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `image` | `string` | Full HF resolve URL for the JPG (used by Dataset Viewer to preview images). |
+| `image_id` | `string` | Unsplash photo id. Also used as the directory name for assets. |
+| `gsplat_share_id` | `string` | Share id on gsplat.org (may be empty). |
+| `gsplat_order_id` | `string` | Order id on gsplat.org (may be empty). |
+| `gsplat_model_file_url` | `string` | gsplat.org model file token (normalized): for example `1770129991964_T8LMLFAy` (may be empty). |
+| `tags` | `string` | Space-separated tags (derived from Unsplash tags). |
+| `topics` | `string` | Space-separated topics (often empty). |
+| `tags_text` | `string` | Same as `tags` (kept for backwards compatibility / full-text search). |
+| `topics_text` | `string` | Same as `topics`. |
+| `alt_description` | `string` | Unsplash `alt_description` (empty string if missing). |
+| `description` | `string` | Unsplash `description` (empty string if missing). |
+| `created_at` | `string` | Unsplash `created_at` timestamp (ISO8601). |
+| `user_username` | `string` | Unsplash author username. |
+
+## Verification / manifest
+
+- Use `data/manifest.jsonl` to verify file integrity after downloading assets (compare size + sha256).
+- If present, `jpg_sha256` / `ply_sha256` / `spz_sha256` and `*_bytes` in `data/train.jsonl` are consistent with the manifest entries.
+
+## Links
+
+- GitHub (pipeline code): https://github.com/nameearly/sharp-ply-share
+- Hugging Face (dataset): https://huggingface.co/datasets/eatmorefruit/sharp-ply-share
+
+## Licensing
 
 Unsplash photos are provided under the **Unsplash License** (not CC0): https://unsplash.com/license
 
@@ -117,3 +109,20 @@ python -m sharp_dataset_pipeline.queue_manager --save-dir ./runs/your_run_id --a
 ### Modular Configuration
 
 Configuration has been moved to `sharp_dataset_pipeline/config.py`. It supports loading from `.env` and `.env.local` files, providing a cleaner way to manage environment-specific settings.
+
+## Pipeline coordination / dedup (for multi-client runs)
+
+- Prefetch buffer: `MAX_CANDIDATES` controls how many images the downloader will try to keep queued for inference (same as `DOWNLOAD_QUEUE_MAX` unless you override it explicitly). `MAX_IMAGES` limits how many are actually downloaded/processed.
+- Remote done check: `HF_DONE_BACKEND=index` uses the HF index file (`data/train.jsonl`) as a local in-memory done set, and periodically refreshes it for collaborator correctness (`HF_INDEX_REFRESH_SECS`).
+- Range locks (list + oldest): range coordination is stored on HF under `ranges/locks`, `ranges/done`, and `ranges/progress`.
+- Range done prefix: `ranges/progress/done_prefix.json` is used to avoid repo-wide listings of `ranges/done/`.
+- Ant-style range selection (optional): `ANT_ENABLED=1` with `ANT_CANDIDATE_RANGES`, `ANT_EPSILON`, `ANT_FRESH_SECS` to reduce contention across multiple clients.
+- HF upload batching (optional): `HF_UPLOAD_BATCH_SIZE=4` is recommended for throughput; small contributors can use `HF_UPLOAD_BATCH_SIZE=1`. `HF_UPLOAD_BATCH_WAIT_MS` controls the micro-batching wait window.
+- **Persistent queue recovery**: The pipeline now supports persistent queueing via `pending_queue.jsonl`. On startup, it automatically checks the HF repository and local index to absorb any unfinished tasks from previous runs.
+- **Runtime Queue Management**: You can manage the running pipeline's queue using the `queue_manager.py` tool. It allows adding tasks with custom properties (e.g., overriding HF upload) or listing/clearing pending tasks without stopping the pipeline.
+- **Optimized Token Rotation**: Unsplash API keys are now rotated more efficiently. For rate-limited keys, the pipeline will attempt to retry after 30 minutes (while maintaining a default 1-hour reset window), maximizing throughput.
+- **Hugging Face Rate Limit Protection**: The pipeline now implements a multi-layer protection mechanism against HF API limits:
+    - **Global Commit Circuit Breaker**: Automatically suppresses non-critical metadata commits for 1 hour when the repository commit limit (128/h) is reached.
+    - **Aggressive Throttling**: Progress and heartbeat sync frequency is reduced to once every 30 minutes.
+    - **Local Caching**: Range lock status and progress are cached locally to minimize redundant API calls.
+    - **Robust Backoff**: Centralized commit logic with exponential backoff and jitter for all HF operations.

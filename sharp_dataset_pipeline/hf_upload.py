@@ -264,6 +264,29 @@ def upload_sample_pair(
     rel_ply = f"{rel_dir}/{ply_name}"
     rel_spz = f"{rel_dir}/{spz_name}" if spz_name else None
 
+    image_sha256 = ""
+    ply_sha256 = ""
+    spz_sha256 = ""
+    image_bytes = 0
+    ply_bytes = 0
+    spz_bytes2 = 0
+    try:
+        image_sha256 = hf_utils.sha256_file(image_path)
+        image_bytes = hf_utils.file_size(image_path)
+    except Exception:
+        pass
+    try:
+        ply_sha256 = hf_utils.sha256_file(ply_path)
+        ply_bytes = hf_utils.file_size(ply_path)
+    except Exception:
+        pass
+    try:
+        if spz_path and os.path.isfile(spz_path):
+            spz_sha256 = hf_utils.sha256_file(spz_path)
+            spz_bytes2 = hf_utils.file_size(spz_path)
+    except Exception:
+        pass
+
     api = HfApi()
     ops = [
         CommitOperationAdd(path_in_repo=rel_img, path_or_fileobj=image_path),
@@ -359,6 +382,15 @@ def upload_sample_pair(
         "image_url": hf_utils.build_resolve_url(repo_id, rel_img, repo_type=repo_type),
         "ply_url": hf_utils.build_resolve_url(repo_id, rel_ply, repo_type=repo_type),
         "spz_url": hf_utils.build_resolve_url(repo_id, rel_spz, repo_type=repo_type) if rel_spz else None,
+        "image_path": str(rel_img),
+        "ply_path": str(rel_ply),
+        "spz_path": str(rel_spz) if rel_spz else "",
+        "jpg_sha256": str(image_sha256 or ""),
+        "ply_sha256": str(ply_sha256 or ""),
+        "spz_sha256": str(spz_sha256 or ""),
+        "jpg_bytes": int(image_bytes or 0),
+        "ply_bytes": int(ply_bytes or 0),
+        "spz_bytes": int(spz_bytes2 or 0),
         **gsplat_meta,
     }
 
@@ -459,6 +491,29 @@ def upload_sample_pairs(
         rel_ply = f"{rel_dir}/{ply_name}"
         rel_spz = f"{rel_dir}/{spz_name}" if (spz_path and spz_name) else None
 
+        image_sha256 = ""
+        ply_sha256 = ""
+        spz_sha256 = ""
+        image_bytes = 0
+        ply_bytes = 0
+        spz_bytes2 = 0
+        try:
+            image_sha256 = hf_utils.sha256_file(image_path)
+            image_bytes = hf_utils.file_size(image_path)
+        except Exception:
+            pass
+        try:
+            ply_sha256 = hf_utils.sha256_file(ply_path)
+            ply_bytes = hf_utils.file_size(ply_path)
+        except Exception:
+            pass
+        try:
+            if spz_path and os.path.isfile(spz_path):
+                spz_sha256 = hf_utils.sha256_file(spz_path)
+                spz_bytes2 = hf_utils.file_size(spz_path)
+        except Exception:
+            pass
+
         ops.append(CommitOperationAdd(path_in_repo=rel_img, path_or_fileobj=image_path))
         ops.append(CommitOperationAdd(path_in_repo=rel_ply, path_or_fileobj=ply_path))
         if spz_path and rel_spz:
@@ -469,6 +524,12 @@ def upload_sample_pairs(
             "rel_ply": rel_ply,
             "rel_spz": rel_spz,
             "ply_path": ply_path,
+            "jpg_sha256": str(image_sha256 or ""),
+            "ply_sha256": str(ply_sha256 or ""),
+            "spz_sha256": str(spz_sha256 or ""),
+            "jpg_bytes": int(image_bytes or 0),
+            "ply_bytes": int(ply_bytes or 0),
+            "spz_bytes": int(spz_bytes2 or 0),
         }
 
     if not ops:
@@ -546,6 +607,15 @@ def upload_sample_pairs(
             "image_url": hf_utils.build_resolve_url(repo_id, rel_img, repo_type=repo_type),
             "ply_url": hf_utils.build_resolve_url(repo_id, rel_ply, repo_type=repo_type),
             "spz_url": hf_utils.build_resolve_url(repo_id, rel_spz, repo_type=repo_type) if rel_spz else None,
+            "image_path": str(rel_img),
+            "ply_path": str(rel_ply),
+            "spz_path": str(rel_spz) if rel_spz else "",
+            "jpg_sha256": str(meta.get("jpg_sha256") or ""),
+            "ply_sha256": str(meta.get("ply_sha256") or ""),
+            "spz_sha256": str(meta.get("spz_sha256") or ""),
+            "jpg_bytes": int(meta.get("jpg_bytes") or 0),
+            "ply_bytes": int(meta.get("ply_bytes") or 0),
+            "spz_bytes": int(meta.get("spz_bytes") or 0),
             **gsplat_meta,
         }
 

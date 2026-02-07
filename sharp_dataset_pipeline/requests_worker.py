@@ -1079,8 +1079,39 @@ def run_once():
                                                     row[k] = v
                                     except Exception:
                                         pass
+
+                                    try:
+                                        if isinstance(result, dict):
+                                            row["jpg_sha256"] = str(result.get("jpg_sha256") or "")
+                                            row["ply_sha256"] = str(result.get("ply_sha256") or "")
+                                            row["spz_sha256"] = str(result.get("spz_sha256") or "")
+                                            row["jpg_bytes"] = int(result.get("jpg_bytes") or 0)
+                                            row["ply_bytes"] = int(result.get("ply_bytes") or 0)
+                                            row["spz_bytes"] = int(result.get("spz_bytes") or 0)
+                                    except Exception:
+                                        pass
                                     row.update(meta)
                                     index_sync_obj.add_row(row)
+
+                                    try:
+                                        if isinstance(result, dict) and hasattr(index_sync_obj, "add_manifest_items"):
+                                            m_items = []
+                                            ip = str(result.get("image_path") or "").strip().lstrip("/")
+                                            if ip:
+                                                m_items.append({"path": ip, "bytes": int(result.get("jpg_bytes") or 0), "sha256": str(result.get("jpg_sha256") or "").strip().lower()})
+                                            pp = str(result.get("ply_path") or "").strip().lstrip("/")
+                                            if pp:
+                                                m_items.append({"path": pp, "bytes": int(result.get("ply_bytes") or 0), "sha256": str(result.get("ply_sha256") or "").strip().lower()})
+                                            sp = str(result.get("spz_path") or "").strip().lstrip("/")
+                                            if sp:
+                                                m_items.append({"path": sp, "bytes": int(result.get("spz_bytes") or 0), "sha256": str(result.get("spz_sha256") or "").strip().lower()})
+                                            if m_items:
+                                                try:
+                                                    index_sync_obj.add_manifest_items(m_items)
+                                                except Exception:
+                                                    pass
+                                    except Exception:
+                                        pass
                                 except Exception:
                                     pass
                     elif src == "url":
