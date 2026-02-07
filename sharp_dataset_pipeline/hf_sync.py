@@ -194,7 +194,23 @@ def _hf_post_coworker_discussion_event(
             pass
 
     try:
-        api.create_discussion_comment(
+        fn = None
+        try:
+            fn = getattr(api, "create_discussion_comment", None)
+        except Exception:
+            fn = None
+        if not callable(fn):
+            try:
+                fn = getattr(api, "create_discussion_reply", None)
+            except Exception:
+                fn = None
+        if not callable(fn):
+            _d(
+                "HF coworker discussion comment skipped（可忽略） | missing api method create_discussion_comment"
+            )
+            return False
+
+        fn(
             repo_id=str(repo_id),
             repo_type=_HF_REPO_TYPE,
             discussion_num=int(num),
@@ -208,10 +224,17 @@ def _hf_post_coworker_discussion_event(
 
 def _coworker_event_pr_enabled() -> bool:
     try:
-        v = str(os.getenv("HF_COWORKER_EVENT_PR", "") or "").strip().lower()
-        return v in ("1", "true", "yes", "y", "on")
+        raw = os.getenv("HF_COWORKER_EVENT_PR")
+        if raw is None:
+            return True
+        v = str(raw or "").strip().lower()
+        if v in ("0", "false", "no", "n", "off"):
+            return False
+        if v in ("1", "true", "yes", "y", "on"):
+            return True
+        return True
     except Exception:
-        return False
+        return True
 
 
 def hf_locks_repo_path(image_id: str) -> str:

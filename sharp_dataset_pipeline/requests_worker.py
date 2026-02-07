@@ -386,10 +386,6 @@ def _run_sharp_predict(jpg_path: str, gaussians_dir: str) -> str | None:
 
     extra = ["-v"] if verbose else []
     cmd = [
-        "conda",
-        "run",
-        "-n",
-        conda_env,
         "sharp",
         "predict",
         "-i",
@@ -436,7 +432,48 @@ def _run_sharp_predict(jpg_path: str, gaussians_dir: str) -> str | None:
                 pass
             return None
         if int(p.returncode or 0) != 0:
-            return None
+            cmd_conda = [
+                "conda",
+                "run",
+                "-n",
+                conda_env,
+                "sharp",
+                "predict",
+                "-i",
+                jpg_path,
+                "-o",
+                gaussians_dir,
+                "--device",
+                device,
+                *extra,
+            ]
+            p2 = subprocess.Popen(cmd_conda, cwd=ml_sharp_dir, **popen_kw)
+            try:
+                p2.wait(timeout=to_s)
+            except subprocess.TimeoutExpired:
+                try:
+                    if os.name == "nt":
+                        import signal
+
+                        if hasattr(signal, "CTRL_BREAK_EVENT"):
+                            p2.send_signal(signal.CTRL_BREAK_EVENT)
+                            try:
+                                p2.wait(timeout=5)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                try:
+                    p2.kill()
+                except Exception:
+                    pass
+                try:
+                    p2.wait(timeout=5)
+                except Exception:
+                    pass
+                return None
+            if int(p2.returncode or 0) != 0:
+                return None
     except Exception:
         return None
 

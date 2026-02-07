@@ -55,7 +55,13 @@ def ensure_repo(repo_id: str, *, repo_type: str, debug_fn=None) -> bool:
     try:
         from huggingface_hub import HfApi
 
-        api = HfApi()
+        token = str(
+            os.getenv("HF_TOKEN", "")
+            or os.getenv("HUGGINGFACE_HUB_TOKEN", "")
+            or os.getenv("HUGGING_FACE_HUB_TOKEN", "")
+            or ""
+        ).strip()
+        api = HfApi(token=token) if token else HfApi()
         api.create_repo(repo_id=repo_id, repo_type=repo_type, exist_ok=True, private=False)
         return True
     except Exception as e:

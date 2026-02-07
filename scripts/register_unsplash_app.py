@@ -25,7 +25,7 @@ async def register_unsplash_app(app_name: str, headless: bool = False) -> str | 
             except Exception:
                 pass
 
-        user_data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".unsplash_session")
+        user_data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".session", "unsplash")
         try:
             os.makedirs(os.path.dirname(user_data_dir), exist_ok=True)
         except Exception:
@@ -563,7 +563,7 @@ async def register_unsplash_app(app_name: str, headless: bool = False) -> str | 
             except Exception:
                 pass
 
-        user_data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".unsplash_session")
+        user_data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".session", "unsplash")
         try:
             os.makedirs(os.path.dirname(user_data_dir), exist_ok=True)
         except Exception:

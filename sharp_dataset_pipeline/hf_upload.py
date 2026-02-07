@@ -108,6 +108,21 @@ def _hf_rate_limit_wait_s(err: Exception) -> float | None:
 
 
 def _create_commit_retry(api, *, repo_id: str, repo_type: str, operations, commit_message: str, debug_fn):
+    try:
+        from . import hf_sync
+
+        if hasattr(hf_sync, "_hf_create_commit_retry"):
+            hf_sync._hf_create_commit_retry(
+                api,
+                repo_id=str(repo_id),
+                operations=operations,
+                commit_message=str(commit_message),
+                create_pr=False,
+            )
+            return
+    except Exception:
+        pass
+
     last_err = None
     attempt = 0
     while attempt < 6:

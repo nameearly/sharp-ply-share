@@ -72,7 +72,7 @@ def _load_dotenv_if_present() -> None:
             continue
 
 
-_load_dotenv_if_present()
+# _load_dotenv_if_present()
 
 _env_flag = hf_utils.env_flag
 _env_int = hf_utils.env_int
@@ -383,10 +383,6 @@ def _run_sharp_predict_once(input_path: str) -> List[str]:
     _append_gpu_log("before_predict", input_path)
 
     cmd = [
-        "conda",
-        "run",
-        "-n",
-        config.CONDA_ENV_NAME,
         "sharp",
         "predict",
         "-i",
@@ -437,10 +433,13 @@ def _run_sharp_predict_once(input_path: str) -> List[str]:
             if int(p.returncode or 0) != 0:
                 raise subprocess.CalledProcessError(int(p.returncode or 1), cmd)
         except subprocess.CalledProcessError as e:
-            print_debug(f"ml-sharp 通过 'sharp predict' 执行失败，将尝试源码方式运行 | err={str(e)}")
+            print_debug(f"ml-sharp 通过 'sharp predict' 执行失败，将尝试 conda run 方式运行 | err={str(e)}")
 
-            src_dir = os.path.join(config.ML_SHARP_DIR, "src")
-            argv = [
+            cmd_conda = [
+                "conda",
+                "run",
+                "-n",
+                config.CONDA_ENV_NAME,
                 "sharp",
                 "predict",
                 "-i",
@@ -449,47 +448,93 @@ def _run_sharp_predict_once(input_path: str) -> List[str]:
                 config.GAUSSIANS_DIR,
                 "--device",
                 config.SHARP_DEVICE,
+                *extra,
             ]
-            if config.SHARP_VERBOSE:
-                argv.append("-v")
-
-            code = (
-                "import sys; "
-                f"sys.path.insert(0, {repr(src_dir)}); "
-                "from sharp.cli import main_cli; "
-                f"sys.argv = {repr(argv)}; "
-                "main_cli()"
-            )
-            cmd2 = ["conda", "run", "-n", config.CONDA_ENV_NAME, "python", "-c", code]
             to_s = _predict_timeout_s()
-            p2 = subprocess.Popen(cmd2, cwd=config.ML_SHARP_DIR, **popen_kw)
+            p_retry = subprocess.Popen(cmd_conda, cwd=config.ML_SHARP_DIR, **popen_kw)
             try:
-                p2.wait(timeout=to_s)
+                p_retry.wait(timeout=to_s)
             except subprocess.TimeoutExpired:
                 try:
                     if os.name == "nt":
                         import signal
 
                         if hasattr(signal, "CTRL_BREAK_EVENT"):
-                            p2.send_signal(signal.CTRL_BREAK_EVENT)
+                            p_retry.send_signal(signal.CTRL_BREAK_EVENT)
                             try:
-                                p2.wait(timeout=5)
+                                p_retry.wait(timeout=5)
                             except Exception:
                                 pass
                 except Exception:
                     pass
                 try:
-                    p2.kill()
+                    p_retry.kill()
                 except Exception:
                     pass
                 try:
-                    p2.wait(timeout=5)
+                    p_retry.wait(timeout=5)
                 except Exception:
                     pass
-                print_debug(f"predict timeout（源码方式，跳过） | id={os.path.splitext(os.path.basename(str(input_path)))[0]} | device={str(config.SHARP_DEVICE)} | timeout_s={int(to_s or 0)}")
+                print_debug(
+                    f"predict timeout（conda run 方式，跳过） | id={os.path.splitext(os.path.basename(str(input_path)))[0]} | device={str(config.SHARP_DEVICE)} | timeout_s={int(to_s or 0)}"
+                )
                 return []
-            if int(p2.returncode or 0) != 0:
-                raise subprocess.CalledProcessError(int(p2.returncode or 1), cmd2)
+            if int(p_retry.returncode or 0) == 0:
+                print_debug("conda run 方式成功")
+            else:
+                print_debug("conda run 方式也失败，将尝试源码方式运行")
+
+                src_dir = os.path.join(config.ML_SHARP_DIR, "src")
+                argv = [
+                    "sharp",
+                    "predict",
+                    "-i",
+                    input_path,
+                    "-o",
+                    config.GAUSSIANS_DIR,
+                    "--device",
+                    config.SHARP_DEVICE,
+                ]
+                if config.SHARP_VERBOSE:
+                    argv.append("-v")
+
+                code = (
+                    "import sys; "
+                    f"sys.path.insert(0, {repr(src_dir)}); "
+                    "from sharp.cli import main_cli; "
+                    f"sys.argv = {repr(argv)}; "
+                    "main_cli()"
+                )
+                cmd2 = ["conda", "run", "-n", config.CONDA_ENV_NAME, "python", "-c", code]
+                to_s = _predict_timeout_s()
+                p2 = subprocess.Popen(cmd2, cwd=config.ML_SHARP_DIR, **popen_kw)
+                try:
+                    p2.wait(timeout=to_s)
+                except subprocess.TimeoutExpired:
+                    try:
+                        if os.name == "nt":
+                            import signal
+
+                            if hasattr(signal, "CTRL_BREAK_EVENT"):
+                                p2.send_signal(signal.CTRL_BREAK_EVENT)
+                                try:
+                                    p2.wait(timeout=5)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                    try:
+                        p2.kill()
+                    except Exception:
+                        pass
+                    try:
+                        p2.wait(timeout=5)
+                    except Exception:
+                        pass
+                    print_debug(f"predict timeout（源码方式，跳过） | id={os.path.splitext(os.path.basename(str(input_path)))[0]} | device={str(config.SHARP_DEVICE)} | timeout_s={int(to_s or 0)}")
+                    return []
+                if int(p2.returncode or 0) != 0:
+                    raise subprocess.CalledProcessError(int(p2.returncode or 1), cmd2)
     finally:
         _append_gpu_log("after_predict", input_path)
 

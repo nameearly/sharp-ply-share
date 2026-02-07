@@ -1455,7 +1455,17 @@ def run(
                 
                 if not is_done:
                     _debug(debug_fn, f"吸收残留任务 | id={image_id}")
-                    image_q.put(task)
+                    try:
+                        image_q.put(task, timeout=0.1)
+                    except Exception:
+                        try:
+                            image_q.put_nowait(task)
+                        except Exception:
+                            _debug(debug_fn, f"残留队列过多，image_q 已满：将任务放回 pending_queue | id={image_id}")
+                            try:
+                                index_sync.add_to_queue(task)
+                            except Exception:
+                                pass
                 else:
                     _debug(debug_fn, f"残留任务已完成，跳过 | id={image_id}")
 

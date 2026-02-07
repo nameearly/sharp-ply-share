@@ -1,5 +1,5 @@
 test/
-.unsplash_session/
+
 
 # Python
 __pycache__/
@@ -21,6 +21,8 @@ UNSPLASH_ACCESS_KEY.json
 unsplash_keys_log.txt
 process_exception.png
 process_fail.png
+
+.session/
 
 # Node
 node_modules/
