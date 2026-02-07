@@ -314,7 +314,31 @@ def _cleanup_local_outputs(cfg: PipelineConfig, *, primary_path: str, debug_fn) 
                 pp = os.path.normcase(os.path.abspath(str(path)))
                 rr = os.path.normcase(os.path.abspath(str(root)))
                 if _inside(pp, rr) and os.path.isfile(pp):
-                    os.remove(pp)
+                    try:
+                        os.remove(pp)
+                        return
+                    except PermissionError:
+                        last_err = None
+                        for i in range(8):
+                            try:
+                                time.sleep(0.15 + 0.15 * i + random.random() * 0.1)
+                                os.remove(pp)
+                                return
+                            except PermissionError as e:
+                                last_err = e
+                                continue
+                            except Exception:
+                                raise
+                        try:
+                            base = os.path.basename(pp)
+                            ts = int(time.time() * 1000)
+                            tmp = os.path.join(os.path.dirname(pp), f".{base}.deleting.{ts}")
+                            os.replace(pp, tmp)
+                            return
+                        except Exception:
+                            if last_err is not None:
+                                raise last_err
+                            raise
             except Exception as e:
                 _log_exc(debug_fn, f"本地清理失败 | path={str(path)}", e)
 
