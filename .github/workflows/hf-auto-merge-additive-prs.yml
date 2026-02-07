@@ -177,13 +177,23 @@ jobs:
                           if created_ts is not None and (now - float(created_ts)) < float(ttl_s):
                               continue
 
-                          api.change_discussion_status(
-                              repo_id=repo_id,
-                              repo_type=repo_type,
-                              discussion_num=num,
-                              new_status="closed",
-                              comment="Archived: coworker coordination moved to discussion 'coworker registration'.",
-                          )
+                          did_delete = False
+                          try:
+                              if hasattr(api, "delete_discussion"):
+                                  api.delete_discussion(repo_id=repo_id, repo_type=repo_type, discussion_num=num)
+                                  did_delete = True
+                          except Exception as e:
+                              print(f"WARN: delete coworker PR failed: {e}")
+                              did_delete = False
+
+                          if not did_delete:
+                              api.change_discussion_status(
+                                  repo_id=repo_id,
+                                  repo_type=repo_type,
+                                  discussion_num=num,
+                                  new_status="closed",
+                                  comment="Archived: coworker coordination moved to discussion 'coworker registration'.",
+                              )
                           closed += 1
                       except Exception as e:
                           print(f"WARN: close coworker PR failed: {e}")
