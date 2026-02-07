@@ -1,0 +1,82 @@
+{"ts": 1770373936.1807323, "event": "predict_done", "image_id": "xX-kJCNhksQ", "plys": 1, "s": 46.19039487838745, "proc_rss_mb": 47.637, "vmem_pct": 41.2}
+{"ts": 1770373945.0448947, "event": "spz_export_done", "image_id": "xX-kJCNhksQ", "ok": true, "s": 8.359139442443848, "spz_bytes": 17514203, "tool": "", "proc_rss_mb": 48.281, "vmem_pct": 66.2}
+{"ts": 1770373973.878729, "event": "predict_done", "image_id": "4JD-d578iek", "plys": 1, "s": 37.69436025619507, "proc_rss_mb": 99.137, "vmem_pct": 37.6}
+{"ts": 1770373975.4451184, "event": "hf_commit_done", "image_id": "xX-kJCNhksQ", "s": 30.32156753540039, "ops": 3, "proc_rss_mb": 53.992, "vmem_pct": 38.4}
+{"ts": 1770373983.0345297, "event": "spz_export_done", "image_id": "4JD-d578iek", "ok": true, "s": 8.639587640762329, "spz_bytes": 17376719, "tool": "", "proc_rss_mb": 135.484, "vmem_pct": 67.2}
+{"ts": 1770374011.4765594, "event": "predict_done", "image_id": "Ky5Rov4BHMc", "plys": 1, "s": 37.59502339363098, "proc_rss_mb": 189.035, "vmem_pct": 36.2}
+{"ts": 1770374021.749361, "event": "hf_commit_done", "image_id": "4JD-d578iek", "s": 38.6272714138031, "ops": 3, "proc_rss_mb": 132.98, "vmem_pct": 70.4}
+{"ts": 1770374034.2316046, "event": "gsplat_upload_total", "ok": true, "s": 58.78526568412781, "ply_bytes": 66061086, "method": "chunked", "proc_rss_mb": 132.875, "vmem_pct": 87.3}
+{"ts": 1770374034.2325225, "event": "gsplat_done", "image_id": "xX-kJCNhksQ", "ok": true, "s": 58.78653049468994, "proc_rss_mb": 132.875, "vmem_pct": 87.3}
+{"ts": 1770374045.8714952, "event": "spz_export_done", "image_id": "Ky5Rov4BHMc", "ok": true, "s": 8.760803699493408, "spz_bytes": 15695691, "tool": "", "proc_rss_mb": 130.16, "vmem_pct": 88.9}
+{"ts": 1770374052.1956358, "event": "predict_done", "image_id": "u-VOCC2yg9s", "plys": 1, "s": 40.71765947341919, "proc_rss_mb": 201.875, "vmem_pct": 37.7}
+{"ts": 1770374074.8882904, "event": "gsplat_upload_total", "ok": true, "s": 53.137765645980835, "ply_bytes": 66061086, "method": "chunked", "proc_rss_mb": 104.641, "vmem_pct": 89.6}
+{"ts": 1770374074.8892643, "event": "gsplat_done", "image_id": "4JD-d578iek", "ok": true, "s": 53.13889002799988, "proc_rss_mb": 104.641, "vmem_pct": 89.6}
+{"ts": 1770374077.8281949, "event": "hf_commit_done", "image_id": "Ky5Rov4BHMc", "s": 31.88389229774475, "ops": 3, "proc_rss_mb": 50.316, "vmem_pct": 88.8}
+{"ts": 1770374086.8735766, "event": "spz_export_done", "image_id": "u-VOCC2yg9s", "ok": true, "s": 9.092551469802856, "spz_bytes": 12547886, "tool": "", "proc_rss_mb": 102.391, "vmem_pct": 88.2}
+{"ts": 1770374097.2551324, "event": "predict_done", "image_id": "k7bVH7wwR0E", "plys": 1, "s": 45.057960987091064, "proc_rss_mb": 189.926, "vmem_pct": 35.2}
+{"ts": 1770374125.3918574, "event": "hf_commit_done", "image_id": "u-VOCC2yg9s", "s": 38.447975158691406, "ops": 3, "proc_rss_mb": 119.695, "vmem_pct": 87.2}
+{"ts": 1770374136.5200186, "event": "gsplat_upload_total", "ok": true, "s": 58.69086289405823, "ply_bytes": 66061086, "method": "chunked", "proc_rss_mb": 103.938, "vmem_pct": 92.3}
+{"ts": 1770374136.5209382, "event": "gsplat_done", "image_id": "Ky5Rov4BHMc", "ok": true, "s": 58.69183611869812, "proc_rss_mb": 103.938, "vmem_pct": 92.3}
+{"ts": 1770374139.6885161, "event": "predict_done", "image_id": "_R1esGB6zBk", "plys": 1, "s": 42.43213152885437, "proc_rss_mb": 121.156, "vmem_pct": 36.7}
+{"ts": 1770374147.1132786, "event": "spz_export_done", "image_id": "k7bVH7wwR0E", "ok": true, "s": 8.00290846824646, "spz_bytes": 17407758, "tool": "", "proc_rss_mb": 120.984, "vmem_pct": 61.0}
+{"ts": 1770374178.2298079, "event": "predict_done", "image_id": "E0JDAwwaCvI", "plys": 1, "s": 38.53969860076904, "proc_rss_mb": 114.711, "vmem_pct": 35.1}
+{"ts": 1770374181.8430412, "event": "gsplat_upload_total", "ok": true, "s": 56.45016646385193, "ply_bytes": 66061086, "method": "chunked", "proc_rss_mb": 43.871, "vmem_pct": 38.8}
+{"ts": 1770374181.8438346, "event": "gsplat_done", "image_id": "u-VOCC2yg9s", "ok": true, "s": 56.451027154922485, "proc_rss_mb": 43.887, "vmem_pct": 38.8}
+{"ts": 1770374181.995431, "event": "hf_commit_done", "image_id": "k7bVH7wwR0E", "s": 34.811474323272705, "ops": 3, "proc_rss_mb": 45.043, "vmem_pct": 38.9}
+{"ts": 1770374195.0357292, "event": "spz_export_done", "image_id": "_R1esGB6zBk", "ok": true, "s": 9.076834917068481, "spz_bytes": 9493013, "tool": "", "proc_rss_mb": 126.617, "vmem_pct": 66.3}
+{"ts": 1770374203.771799, "event": "spz_export_done", "image_id": "E0JDAwwaCvI", "ok": true, "s": 8.658333778381348, "spz_bytes": 13233363, "tool": "", "proc_rss_mb": 114.125, "vmem_pct": 92.6}
+{"ts": 1770374221.2783773, "event": "predict_done", "image_id": "VmCP4x4VPvk", "plys": 1, "s": 43.04681849479675, "proc_rss_mb": 244.258, "vmem_pct": 37.5}
+{"ts": 1770374239.208792, "event": "gsplat_upload_total", "ok": true, "s": 57.21239686012268, "ply_bytes": 66061086, "method": "chunked", "proc_rss_mb": 147.227, "vmem_pct": 73.4}
+{"ts": 1770374239.2099102, "event": "gsplat_done", "image_id": "k7bVH7wwR0E", "ok": true, "s": 57.21360230445862, "proc_rss_mb": 147.234, "vmem_pct": 73.4}
+{"ts": 1770374251.3352797, "event": "spz_export_done", "image_id": "VmCP4x4VPvk", "ok": true, "s": 8.825610160827637, "spz_bytes": 13610634, "tool": "", "proc_rss_mb": 78.867, "vmem_pct": 83.9}
+{"ts": 1770374255.533628, "event": "hf_commit_batch_done", "s": 51.692365407943726, "ops": 6, "batch_n": 2, "proc_rss_mb": 45.586, "vmem_pct": 85.7}
+{"ts": 1770374261.3239563, "event": "predict_done", "image_id": "cNb7hPlkItg", "plys": 1, "s": 40.0431489944458, "proc_rss_mb": 199.121, "vmem_pct": 32.8}
+{"ts": 1770374291.9954658, "event": "hf_commit_done", "image_id": "VmCP4x4VPvk", "s": 40.584184646606445, "ops": 3, "proc_rss_mb": 94.961, "vmem_pct": 88.1}
+{"ts": 1770374305.3281248, "event": "predict_done", "image_id": "JHYi5ymrk2M", "plys": 1, "s": 44.00036883354187, "proc_rss_mb": 166.43, "vmem_pct": 40.3}
+{"ts": 1770374322.35278, "event": "gsplat_upload_total", "ok": true, "s": 66.81535935401917, "ply_bytes": 66061086, "method": "chunked", "proc_rss_mb": 118.32, "vmem_pct": 72.7}
+{"ts": 1770374348.3530416, "event": "predict_done", "image_id": "YK5w30-X3gI", "plys": 1, "s": 43.022926807403564, "proc_rss_mb": 116.41, "vmem_pct": 42.1}
+{"ts": 1770374353.0578635, "event": "gsplat_upload_total", "ok": true, "s": 61.06136703491211, "ply_bytes": 66061086, "method": "chunked", "proc_rss_mb": 104.688, "vmem_pct": 44.2}
+{"ts": 1770374353.058829, "event": "gsplat_done", "image_id": "VmCP4x4VPvk", "ok": true, "s": 61.062411069869995, "proc_rss_mb": 104.699, "vmem_pct": 44.2}
+{"ts": 1770374367.0554602, "event": "spz_export_done", "image_id": "cNb7hPlkItg", "ok": true, "s": 11.093886375427246, "spz_bytes": 16965681, "tool": "", "proc_rss_mb": 104.695, "vmem_pct": 68.6}
+{"ts": 1770374374.7534947, "event": "spz_export_done", "image_id": "JHYi5ymrk2M", "ok": true, "s": 7.624311923980713, "spz_bytes": 16428309, "tool": "", "proc_rss_mb": 64.184, "vmem_pct": 85.8}
+{"ts": 1770374376.9973762, "event": "gsplat_upload_total", "ok": true, "s": 54.643534898757935, "ply_bytes": 66061086, "method": "chunked", "proc_rss_mb": 29.285, "vmem_pct": 94.7}
+{"ts": 1770374382.9019597, "event": "spz_export_done", "image_id": "YK5w30-X3gI", "ok": true, "s": 8.069381713867188, "spz_bytes": 14915343, "tool": "", "proc_rss_mb": 24.207, "vmem_pct": 92.2}
+{"ts": 1770374391.5532598, "event": "predict_done", "image_id": "sNQf2ySMcj8", "plys": 1, "s": 43.198219299316406, "proc_rss_mb": 258.945, "vmem_pct": 36.5}
+{"ts": 1770374400.7446008, "event": "spz_export_done", "image_id": "sNQf2ySMcj8", "ok": true, "s": 8.68280553817749, "spz_bytes": 12674963, "tool": "", "proc_rss_mb": 260.688, "vmem_pct": 66.8}
+{"ts": 1770374428.7386038, "event": "predict_done", "image_id": "NvqWJrOV8Ig", "plys": 1, "s": 37.182727336883545, "proc_rss_mb": 191.699, "vmem_pct": 34.4}
+{"ts": 1770374469.0988646, "event": "predict_done", "image_id": "dSL3Jp2yyQk", "plys": 1, "s": 40.35874009132385, "proc_rss_mb": 101.535, "vmem_pct": 36.7}
+{"ts": 1770374511.1263754, "event": "predict_done", "image_id": "vEz_9XCexU0", "plys": 1, "s": 42.025893688201904, "proc_rss_mb": 20.043, "vmem_pct": 37.4}
+{"ts": 1770374552.6925435, "event": "predict_done", "image_id": "7cI1nc_iSRM", "plys": 1, "s": 41.56381964683533, "proc_rss_mb": 18.535, "vmem_pct": 37.1}
+{"ts": 1770386283.036938, "event": "predict_done", "image_id": "upR8raSXvwg", "plys": 1, "s": 42.7635235786438, "proc_rss_mb": 32.316, "vmem_pct": 38.8}
+{"ts": 1770386294.4567063, "event": "spz_export_done", "image_id": "upR8raSXvwg", "ok": true, "s": 10.906002521514893, "spz_bytes": 15712697, "tool": "", "proc_rss_mb": 32.754, "vmem_pct": 71.2}
+{"ts": 1770386322.2331727, "event": "predict_done", "image_id": "NKfmg9oJuCA", "plys": 1, "s": 39.191455125808716, "proc_rss_mb": 122.184, "vmem_pct": 39.2}
+{"ts": 1770386331.0897307, "event": "spz_export_done", "image_id": "NKfmg9oJuCA", "ok": true, "s": 8.353293657302856, "spz_bytes": 13101494, "tool": "", "proc_rss_mb": 122.258, "vmem_pct": 66.8}
+{"ts": 1770386334.2649882, "event": "hf_commit_done", "image_id": "upR8raSXvwg", "s": 39.73511219024658, "ops": 3, "proc_rss_mb": 68.66, "vmem_pct": 74.3}
+{"ts": 1770386368.2930698, "event": "predict_done", "image_id": "FmOPaefLRA0", "plys": 1, "s": 46.057578563690186, "proc_rss_mb": 170.055, "vmem_pct": 37.7}
+{"ts": 1770386372.684398, "event": "hf_commit_done", "image_id": "NKfmg9oJuCA", "s": 41.50900888442993, "ops": 3, "proc_rss_mb": 104.641, "vmem_pct": 41.5}
+{"ts": 1770386408.4904864, "event": "predict_done", "image_id": "RMYSwPdSaBc", "plys": 1, "s": 40.19546914100647, "proc_rss_mb": 128.043, "vmem_pct": 37.7}
+{"ts": 1770386468.1007662, "event": "gsplat_upload_total", "ok": true, "s": 133.8333945274353, "ply_bytes": 66061086, "method": "chunked", "proc_rss_mb": 99.207, "vmem_pct": 70.1}
+{"ts": 1770386468.1047053, "event": "gsplat_done", "image_id": "upR8raSXvwg", "ok": true, "s": 133.83753538131714, "proc_rss_mb": 99.223, "vmem_pct": 70.0}
+{"ts": 1770386484.80665, "event": "spz_export_done", "image_id": "FmOPaefLRA0", "ok": true, "s": 13.590465545654297, "spz_bytes": 16857505, "tool": "", "proc_rss_mb": 35.766, "vmem_pct": 91.2}
+{"ts": 1770386496.643015, "event": "spz_export_done", "image_id": "RMYSwPdSaBc", "ok": true, "s": 11.740869998931885, "spz_bytes": 15022952, "tool": "", "proc_rss_mb": 26.918, "vmem_pct": 93.2}
+{"ts": 1770386507.7883077, "event": "predict_done", "image_id": "8x4_rmUbTC4", "plys": 1, "s": 59.63926815986633, "proc_rss_mb": 188.496, "vmem_pct": 50.1}
+{"ts": 1770386547.0841742, "event": "hf_commit_batch_done", "s": 50.34394288063049, "ops": 6, "batch_n": 2, "proc_rss_mb": 40.27, "vmem_pct": 97.1}
+{"ts": 1770386566.7911263, "event": "predict_done", "image_id": "99y2qSLexys", "plys": 1, "s": 58.99975943565369, "proc_rss_mb": 93.434, "vmem_pct": 41.7}
+{"ts": 1770386623.5788803, "event": "predict_done", "image_id": "vm7NX3PD8-A", "plys": 1, "s": 56.78351306915283, "proc_rss_mb": 164.523, "vmem_pct": 42.8}
+{"ts": 1770386641.5971396, "event": "gsplat_upload_total", "ok": true, "s": 94.50902390480042, "ply_bytes": 66061086, "method": "chunked", "proc_rss_mb": 68.785, "vmem_pct": 81.7}
+{"ts": 1770386693.3648703, "event": "gsplat_upload_total", "ok": true, "s": 320.6789300441742, "ply_bytes": 66061086, "method": "chunked", "proc_rss_mb": 115.891, "vmem_pct": 94.8}
+{"ts": 1770386693.3673787, "event": "gsplat_done", "image_id": "NKfmg9oJuCA", "ok": true, "s": 320.68174505233765, "proc_rss_mb": 116.293, "vmem_pct": 94.8}
+{"ts": 1770386711.8198328, "event": "spz_export_done", "image_id": "8x4_rmUbTC4", "ok": true, "s": 15.596864700317383, "spz_bytes": 16920590, "tool": "", "proc_rss_mb": 78.941, "vmem_pct": 81.8}
+{"ts": 1770386717.2464795, "event": "predict_done", "image_id": "rAtPI2oOTWk", "plys": 1, "s": 93.66267967224121, "proc_rss_mb": 80.18, "vmem_pct": 55.9}
+{"ts": 1770386724.0261753, "event": "spz_export_done", "image_id": "99y2qSLexys", "ok": true, "s": 12.116236925125122, "spz_bytes": 15433091, "tool": "", "proc_rss_mb": 62.934, "vmem_pct": 55.0}
+{"ts": 1770386735.4537582, "event": "spz_export_done", "image_id": "vm7NX3PD8-A", "ok": true, "s": 11.336204767227173, "spz_bytes": 14032332, "tool": "", "proc_rss_mb": 32.004, "vmem_pct": 87.4}
+{"ts": 1770386741.72933, "event": "gsplat_upload_total", "ok": true, "s": 100.12954115867615, "ply_bytes": 66061086, "method": "chunked", "proc_rss_mb": 250.91, "vmem_pct": 89.6}
+{"ts": 1770386756.457688, "event": "spz_export_done", "image_id": "rAtPI2oOTWk", "ok": true, "s": 12.179779291152954, "spz_bytes": 17377271, "tool": "", "proc_rss_mb": 252.918, "vmem_pct": 83.4}
+{"ts": 1770386774.1368713, "event": "predict_done", "image_id": "m8Bxd5n4A8g", "plys": 1, "s": 56.886093616485596, "proc_rss_mb": 250.809, "vmem_pct": 41.9}
+{"ts": 1770386807.6272454, "event": "hf_commit_batch_done", "s": 72.03606343269348, "ops": 9, "batch_n": 3, "proc_rss_mb": 49.973, "vmem_pct": 85.8}
+{"ts": 1770386838.5372682, "event": "predict_done", "image_id": "e3kbIGL6U70", "plys": 1, "s": 64.39683485031128, "proc_rss_mb": 159.312, "vmem_pct": 48.2}
+{"ts": 1770386843.3144877, "event": "hf_commit_done", "image_id": "rAtPI2oOTWk", "s": 86.74946093559265, "ops": 3, "proc_rss_mb": 106.629, "vmem_pct": 49.1}
+{"ts": 1770386910.5980437, "event": "gsplat_upload_total", "ok": true, "s": 102.96540212631226, "ply_bytes": 66061086, "method": "chunked", "proc_rss_mb": 105.492, "vmem_pct": 50.4}
+{"ts": 1770386969.258603, "event": "gsplat_upload_total", "ok": true, "s": 125.9414803981781, "ply_bytes": 66061086, "method": "chunked", "proc_rss_mb": 101.91, "vmem_pct": 48.8}
+{"ts": 1770386969.2610347, "event": "gsplat_done", "image_id": "rAtPI2oOTWk", "ok": true, "s": 125.94445538520813, "proc_rss_mb": 101.914, "vmem_pct": 48.8}
+{"ts": 1770386992.4140131, "event": "gsplat_upload_total", "ok": true, "s": 81.81161761283875, "ply_bytes": 66061086, "method": "chunked", "proc_rss_mb": 49.945, "vmem_pct": 48.7}
