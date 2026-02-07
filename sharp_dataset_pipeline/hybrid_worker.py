@@ -124,6 +124,11 @@ def _run_normal_once(*, max_images_override: int | None = None) -> int:
     try:
         p = subprocess.Popen([sys.executable, script], cwd=root, env=env)
         while True:
+            if stop_requested():
+                return 0
+            if pause_requested():
+                time.sleep(0.2)
+                continue
             try:
                 return int(p.wait(timeout=1.0))
             except subprocess.TimeoutExpired:

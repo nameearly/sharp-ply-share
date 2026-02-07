@@ -322,16 +322,24 @@ def _download_url_to_file(url: str, out_path: str) -> bool:
         pass
     tries = 0
     while True:
+        if not gate():
+            return False
         tries += 1
         try:
             r = requests.get(url, timeout=30, stream=True, headers={"User-Agent": "sharp-ply-share"})
             if r.status_code != 200:
                 if tries >= 3:
                     return False
-                time.sleep(1.0)
+                t_end = time.time() + 1.0
+                while time.time() < t_end:
+                    if not gate():
+                        return False
+                    time.sleep(0.2)
                 continue
             with open(out_path, "wb") as f:
                 for chunk in r.iter_content(chunk_size=1024 * 256):
+                    if not gate():
+                        return False
                     if not chunk:
                         continue
                     f.write(chunk)
@@ -339,7 +347,11 @@ def _download_url_to_file(url: str, out_path: str) -> bool:
         except Exception:
             if tries >= 3:
                 return False
-            time.sleep(1.0)
+            t_end = time.time() + 1.0
+            while time.time() < t_end:
+                if not gate():
+                    return False
+                time.sleep(0.2)
 
 
 def _run_sharp_predict(jpg_path: str, gaussians_dir: str) -> str | None:
@@ -508,6 +520,8 @@ def _run_sharp_predict(jpg_path: str, gaussians_dir: str) -> str | None:
 def _create_commit_retry(api, *, repo_id: str, repo_type: str, operations, commit_message: str, debug_fn=None):
     last_err = None
     for attempt in range(0, 6):
+        if not gate():
+            raise RuntimeError("stopped")
         try:
             api.create_commit(repo_id=repo_id, repo_type=repo_type, operations=operations, commit_message=commit_message)
             return
@@ -518,13 +532,21 @@ def _create_commit_retry(api, *, repo_id: str, repo_type: str, operations, commi
             if attempt >= 5:
                 raise
             try:
-                wait_s = min(8.0, float(0.5 * (2**attempt)))
+                wait_s = 1.0 + attempt * 0.5
                 wait_s = float(wait_s) * (0.5 + (hash(str(e)) % 1000) / 1000.0)
                 if debug_fn:
                     debug_fn(f"HF commit 冲突 412（可重试） | wait={wait_s:.2f}s | attempt={attempt + 1}/6")
-                time.sleep(wait_s)
+                end_ts = time.time() + float(max(0.0, wait_s))
+                while time.time() < end_ts:
+                    if not gate():
+                        raise RuntimeError("stopped")
+                    time.sleep(0.2)
             except Exception:
-                time.sleep(0.5)
+                end_ts = time.time() + 0.5
+                while time.time() < end_ts:
+                    if not gate():
+                        raise RuntimeError("stopped")
+                    time.sleep(0.2)
     if last_err is not None:
         raise last_err
 
@@ -959,12 +981,21 @@ def run_once():
                         else:
                             if not gate():
                                 raise RuntimeError("stopped")
-                            details = unsplash.fetch_photo_details(pid)
-                            if not details:
-                                raise RuntimeError("unsplash fetch_photo_details failed")
-                            download_location = ((details.get("links") or {}).get("download_location"))
+                            download_location = None
+                            try:
+                                if hasattr(unsplash, "build_download_location"):
+                                    download_location = unsplash.build_download_location(pid)
+                            except Exception:
+                                download_location = None
+
+                            details = None
                             if not download_location:
-                                raise RuntimeError("unsplash download_location missing")
+                                details = unsplash.fetch_photo_details(pid)
+                                if not details:
+                                    raise RuntimeError("unsplash fetch_photo_details failed")
+                                download_location = ((details.get("links") or {}).get("download_location"))
+                                if not download_location:
+                                    raise RuntimeError("unsplash download_location missing")
                             jpg_local = os.path.join(images_dir, f"{pid}.jpg")
                             if (not os.path.isfile(jpg_local)) or os.path.getsize(jpg_local) <= 0:
                                 if not gate():
@@ -1006,13 +1037,15 @@ def run_once():
                             if index_sync_obj is not None:
                                 try:
                                     tags = []
-                                    for t in (details.get("tags") or []):
+                                    if details is None:
+                                        details = unsplash.fetch_photo_details(pid)
+                                    for t in ((details or {}).get("tags") or []):
                                         if isinstance(t, dict):
                                             tt = (t.get("title") or "").strip()
                                             if tt:
                                                 tags.append(tt)
                                     topics = []
-                                    for t in (details.get("topics") or []):
+                                    for t in ((details or {}).get("topics") or []):
                                         if isinstance(t, dict):
                                             tt = (t.get("title") or "").strip()
                                             if tt:

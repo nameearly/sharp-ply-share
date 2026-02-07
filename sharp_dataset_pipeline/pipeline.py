@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import math
 import random
@@ -141,6 +142,21 @@ def idle_sleep(cfg: PipelineConfig) -> None:
     time.sleep(max(0.1, float(cfg.idle_sleep_s or 0.5)))
 
 
+def _sleep_with_gate(cfg: PipelineConfig, stop_event: threading.Event, seconds: float) -> bool:
+    try:
+        s = float(seconds)
+    except Exception:
+        s = 0.0
+    if s <= 0:
+        return True
+    end_ts = time.time() + s
+    while time.time() < end_ts:
+        if not gate(cfg, stop_event):
+            return False
+        time.sleep(min(0.2, max(0.05, end_ts - time.time())))
+    return True
+
+
 def wait_if_paused(cfg: PipelineConfig, stop_event: threading.Event):
     while (not stop_event.is_set()) and (not stop_requested(cfg)) and pause_requested(cfg):
         idle_sleep(cfg)
@@ -155,15 +171,15 @@ def gate(cfg: PipelineConfig, stop_event: threading.Event) -> bool:
     return True
 
 
-def _wait_for_api_slot() -> None:
+def _wait_for_api_slot(cfg: PipelineConfig, stop_event: threading.Event) -> None:
     """Wait for a free slot in the Unsplash API rate limit."""
     try:
         if unsplash.is_rate_limited():
             wait_s = unsplash.rate_limit_wait_s(30.0)
             if wait_s > 0:
-                time.sleep(float(wait_s))
+                _sleep_with_gate(cfg, stop_event, float(wait_s))
     except Exception:
-        time.sleep(1.0)
+        _sleep_with_gate(cfg, stop_event, 1.0)
 
 
 def _log_exc(debug_fn: Optional[Callable[[str], None]], msg: str, e: Optional[BaseException] = None) -> None:
@@ -683,7 +699,7 @@ def predict_worker(
             image_path = item["image_path"]
             meta = item.get("meta") if isinstance(item, dict) else None
             dl = item.get("download_location") if isinstance(item, dict) else None
-            _wait_for_api_slot()
+            _wait_for_api_slot(cfg, stop_event)
             
             # Persistent queue logic: save task before processing
             if index_sync is not None:
@@ -1493,7 +1509,60 @@ def run(
             uq = -1
         return iq, uq, pi, ui, cur_pid, cur_pts
 
+    def _write_stop_artifacts(reason: str) -> None:
+        try:
+            iq, uq, pi, ui, cur_pid, cur_pts = _snapshot()
+            payload = {
+                "ts": float(time.time()),
+                "reason": str(reason),
+                "stop_file": _stop_file_path(cfg),
+                "pause_file": _pause_file_path(cfg),
+                "image_q": int(iq),
+                "upload_q": int(uq),
+                "predict_inflight": int(pi),
+                "upload_inflight": int(ui),
+                "predict_image_id": str(cur_pid or ""),
+                "predict_age_s": int(time.time()) - int(cur_pts) if cur_pts else 0,
+            }
+            p = _control_path(cfg, "stop_status.json")
+            try:
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+            except Exception:
+                pass
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
+
+        try:
+            co = None
+            try:
+                co = {
+                    "ts": float(time.time()),
+                    "reason": str(reason),
+                    "coord_type": type(coord).__name__ if coord is not None else None,
+                    "owner": getattr(coord, "owner", None) if coord is not None else None,
+                    "session_id": getattr(coord, "session_id", None) if coord is not None else None,
+                }
+            except Exception:
+                co = None
+            p2 = _control_path(cfg, "cowork_exit.json")
+            try:
+                os.makedirs(os.path.dirname(p2), exist_ok=True)
+            except Exception:
+                pass
+            with open(p2, "w", encoding="utf-8") as f:
+                f.write(json.dumps(co or {"ts": float(time.time()), "reason": str(reason)}, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
+
     def _request_stop(reason: str):
+        _write_stop_artifacts(str(reason))
+        try:
+            if coord is not None:
+                coord.close()
+        except Exception:
+            pass
         try:
             touch_stop_file(cfg)
         except Exception:

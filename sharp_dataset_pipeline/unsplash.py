@@ -36,7 +36,20 @@ _session = requests.Session()
 _next_api_allowed_ts = 0.0
 _api_backoff_seconds = 0.0
 _rate_limited = False
+_all_keys_rate_limited_last_log_ts = 0.0
+_API_REQ_LOCK = threading.Lock()
 _debug = None
+
+
+def _session_get(url: str, **kwargs):
+    try:
+        s = str(url or "")
+    except Exception:
+        s = ""
+    if "api.unsplash.com" in s:
+        with _API_REQ_LOCK:
+            return _session.get(url, **kwargs)
+    return _session.get(url, **kwargs)
 
 
 def configure_unsplash(
@@ -349,13 +362,27 @@ def _trigger_auto_registration():
         if process.returncode == 0:
             # Extract access key from stdout if possible
             import re
-            match = re.search(r"Access Key: (\S+)", stdout)
-            if match:
-                new_key = match.group(1).strip()
+            new_key = None
+            try:
+                patterns = [
+                    r"Access\s*Key\s*:\s*(\S+)",
+                    r"应用注册成功[！!]?\s*Key\s*:\s*(\S+)",
+                    r"\bKey\s*:\s*(\S+)",
+                ]
+                for pat in patterns:
+                    m = re.search(pat, stdout)
+                    if m:
+                        new_key = m.group(1).strip()
+                        break
+            except Exception:
+                new_key = None
+
+            if new_key:
                 _d(f"[AUTO_REG] 新应用注册成功! Key: {new_key}")
                 
                 # Add to pool
                 with _AUTO_REG_LOCK:
+                    global _ACTIVE_KEY_IDX
                     _KEY_POOL.append(
                         {
                             "access_key": new_key,
@@ -367,6 +394,10 @@ def _trigger_auto_registration():
                     _KEY_NEXT_API_ALLOWED_TS.append(0.0)
                     _KEY_API_BACKOFF_SECONDS.append(0.0)
                     _KEY_RATE_LIMITED.append(False)
+                    try:
+                        _ACTIVE_KEY_IDX = max(0, int(len(_KEY_POOL) - 1))
+                    except Exception:
+                        _ACTIVE_KEY_IDX = 0
                     # 关键修复：确保全局速率限制标志被清除，以便程序能立即使用新 Key 继续
                     global _rate_limited
                     _rate_limited = False
@@ -484,9 +515,58 @@ def _ensure_key_for_request() -> bool:
         # 4. 如果所有 Key 都不可用，判断是否触发自动注册
         if best is not None:
             wait_time = best_ts - now
-            # 降低触发阈值：只要所有 Key 都不可用，就立即触发自动注册
-            # 之前的 600s 阈值太保守，导致用户觉得系统没有按预期自动扩展
-            _d(f"[AUTO_REG] 现有 Key 均被限速 (需等待 {int(wait_time)}s)，尝试自动注册新 Key...")
+            all_rl = False
+            try:
+                all_rl = bool(_KEY_POOL) and bool(_KEY_RATE_LIMITED) and all(bool(x) for x in _KEY_RATE_LIMITED)
+            except Exception:
+                all_rl = False
+
+            # Log wording: distinguish "real" rate limit vs local throttling interval.
+            try:
+                global _all_keys_rate_limited_last_log_ts
+                last = float(_all_keys_rate_limited_last_log_ts or 0.0)
+                if float(now) - float(last) >= 2.0:
+                    if all_rl:
+                        _d(f"[AUTO_REG] 现有 Key 均被限速 (需等待 {int(wait_time)}s)")
+                    else:
+                        _d(f"API节流：等待 {round(max(0.0, float(wait_time)), 2)}s")
+                    _all_keys_rate_limited_last_log_ts = float(now)
+            except Exception:
+                if all_rl:
+                    _d(f"[AUTO_REG] 现有 Key 均被限速 (需等待 {int(wait_time)}s)")
+                else:
+                    _d(f"API节流：等待 {round(max(0.0, float(wait_time)), 2)}s")
+
+            # If the best key will be available soon, prefer waiting rather than creating a new app.
+            try:
+                short_wait_s = float(os.getenv("AUTO_REG_SHORT_WAIT_SECS", "30") or "30")
+            except Exception:
+                short_wait_s = 30.0
+            if wait_time <= float(short_wait_s):
+                _rate_limited = True
+                _next_api_allowed_ts = float(best_ts)
+                try:
+                    # Break potential busy-loop callers (e.g. repeated is_rate_limited checks)
+                    sleep_s = max(0.0, min(float(wait_time), 1.0))
+                    if sleep_s > 0:
+                        time.sleep(float(sleep_s))
+                except Exception:
+                    pass
+                return False
+
+            # If not all keys are actually rate-limited, do NOT attempt auto-registration.
+            if not all_rl:
+                _rate_limited = True
+                _next_api_allowed_ts = float(best_ts)
+                return False
+
+            allow_reg = str(os.getenv("ALLOW_AUTO_REG", "0") or "0").strip()
+            if allow_reg != "1":
+                _rate_limited = True
+                _next_api_allowed_ts = float(best_ts)
+                return False
+
+            _d("[AUTO_REG] 等待时间较长，尝试自动注册新 Key...")
             try:
                 if float(_AUTO_REG_DISABLED_UNTIL_TS) > float(now):
                     _d("[AUTO_REG] 自动注册已暂停（疑似账号级限流），改为等待现有 Key 复活")
@@ -611,6 +691,11 @@ def _note_api_request_done(min_interval_s=0.75):
 
 def _note_api_rate_limited(response):
     global _next_api_allowed_ts, _api_backoff_seconds
+    stop_wait_default_s = 1800.0
+    try:
+        stop_wait_default_s = float(os.getenv("UNSPLASH_RATE_LIMIT_WAIT_SECS", "1800") or "1800")
+    except Exception:
+        stop_wait_default_s = 1800.0
     retry_after = response.headers.get("Retry-After")
     wait_s = None
     if retry_after:
@@ -621,7 +706,7 @@ def _note_api_rate_limited(response):
 
     if wait_s is None:
         if _STOP_ON_RATE_LIMIT:
-            wait_s = 3600.0
+            wait_s = float(stop_wait_default_s)
             _api_backoff_seconds = float(wait_s)
         else:
             if _api_backoff_seconds <= 0:
@@ -631,7 +716,7 @@ def _note_api_rate_limited(response):
             wait_s = _api_backoff_seconds
     else:
         if _STOP_ON_RATE_LIMIT:
-            wait_s = max(3600.0, float(wait_s))
+            wait_s = max(float(stop_wait_default_s), float(wait_s))
         _api_backoff_seconds = max(_api_backoff_seconds, float(wait_s))
 
     _next_api_allowed_ts = time.time() + float(wait_s)
@@ -706,6 +791,16 @@ def add_utm(url):
     return url + "?" + _build_utm_query()
 
 
+def build_download_location(photo_id: str) -> str | None:
+    try:
+        pid = str(photo_id or "").strip()
+        if not pid:
+            return None
+        return add_utm(f"{_API_BASE}/photos/{pid}/download")
+    except Exception:
+        return None
+
+
 def parse_focal_length(value):
     if value is None:
         return None, None, None, None
@@ -769,9 +864,10 @@ def fetch_photos(query, page=1, order_by="latest"):
         try:
             _ensure_key_for_request()
             if _STOP_ON_RATE_LIMIT and _rate_limited:
-                return None
+                _wait_for_api_slot()
+                clear_rate_limited()
             _wait_for_api_slot()
-            response = _session.get(
+            response = _session_get(
                 f"{_API_BASE}/search/photos",
                 headers=_headers(),
                 params=params,
@@ -807,9 +903,10 @@ def fetch_list_photos(page=1, order_by="latest"):
         try:
             _ensure_key_for_request()
             if _STOP_ON_RATE_LIMIT and _rate_limited:
-                return None
+                _wait_for_api_slot()
+                clear_rate_limited()
             _wait_for_api_slot()
-            response = _session.get(
+            response = _session_get(
                 f"{_API_BASE}/photos",
                 headers=_headers(),
                 params=params,
@@ -842,9 +939,10 @@ def fetch_photo_details(photo_id):
         try:
             _ensure_key_for_request()
             if _STOP_ON_RATE_LIMIT and _rate_limited:
-                return None
+                _wait_for_api_slot()
+                clear_rate_limited()
             _wait_for_api_slot()
-            response = _session.get(
+            response = _session_get(
                 f"{_API_BASE}/photos/{photo_id}",
                 headers=_headers(),
                 timeout=20,
@@ -878,9 +976,19 @@ def _get_download_url(download_location):
         try:
             _ensure_key_for_request()
             if _STOP_ON_RATE_LIMIT and _rate_limited:
-                return None
+                try:
+                    now = time.time()
+                    wait_s = max(0.0, float(_next_api_allowed_ts) - float(now))
+                    _d(
+                        f"download_location waiting due to rate limit | wait={int(wait_s)}s | url={str(download_location)[:120]}"
+                    )
+                except Exception:
+                    wait_s = 0.0
+                _wait_for_api_slot()
+                clear_rate_limited()
+                continue
             _wait_for_api_slot()
-            response = _session.get(download_location, headers=_headers(), timeout=20)
+            response = _session_get(download_location, headers=_headers(), timeout=20)
             if _is_rate_limit_exceeded(response):
                 _mark_rate_limited(response)
                 if tries >= 8:
@@ -916,7 +1024,17 @@ def download_image(download_location, output_path):
     while True:
         tries += 1
         try:
-            r = _session.get(download_url, timeout=30, stream=True)
+            try:
+                if "api.unsplash.com" in str(download_url or ""):
+                    _ensure_key_for_request()
+                    if _STOP_ON_RATE_LIMIT and _rate_limited:
+                        return False
+                    _wait_for_api_slot()
+                    r = _session_get(download_url, headers=_headers(), timeout=30, stream=True)
+                else:
+                    r = _session_get(download_url, timeout=30, stream=True)
+            except Exception:
+                r = _session_get(download_url, timeout=30, stream=True)
             if r.status_code != 200:
                 _d(f"下载失败 | status={r.status_code} | url={download_url}")
                 if tries >= 3:
