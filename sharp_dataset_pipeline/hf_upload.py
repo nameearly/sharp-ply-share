@@ -288,44 +288,83 @@ def upload_sample_pair(
         pass
 
     api = HfApi()
-    ops = [
-        CommitOperationAdd(path_in_repo=rel_img, path_or_fileobj=image_path),
-        CommitOperationAdd(path_in_repo=rel_ply, path_or_fileobj=ply_path),
-    ]
-    if spz_path and rel_spz:
-        ops.append(CommitOperationAdd(path_in_repo=rel_spz, path_or_fileobj=spz_path))
-
-    commit_t0 = float(time.time())
+    commit_t0 = None
+    ops = []
+    f_img = None
+    f_ply = None
+    f_spz = None
     try:
-        _create_commit_retry(
-            api,
-            repo_id=repo_id,
-            repo_type=repo_type,
-            operations=ops,
-            commit_message=f"add {image_id}",
-            debug_fn=debug_fn,
-        )
-    except Exception as e:
-        if not hf_utils.should_retry_with_pr(e):
-            raise
-        with _commit_lock:
-            api.create_commit(
+        f_img = open(str(image_path), "rb")
+        f_ply = open(str(ply_path), "rb")
+        ops = [
+            CommitOperationAdd(path_in_repo=rel_img, path_or_fileobj=f_img),
+            CommitOperationAdd(path_in_repo=rel_ply, path_or_fileobj=f_ply),
+        ]
+        if spz_path and rel_spz:
+            try:
+                f_spz = open(str(spz_path), "rb")
+                ops.append(CommitOperationAdd(path_in_repo=rel_spz, path_or_fileobj=f_spz))
+            except Exception:
+                f_spz = None
+
+        commit_t0 = float(time.time())
+        try:
+            _create_commit_retry(
+                api,
                 repo_id=repo_id,
                 repo_type=repo_type,
                 operations=ops,
                 commit_message=f"add {image_id}",
-                create_pr=True,
+                debug_fn=debug_fn,
             )
+        except Exception as e:
+            try:
+                if debug_fn:
+                    debug_fn(
+                        "HF create_commit 失败（将决定是否走 PR） | "
+                        f"img_exists={int(bool(image_path and os.path.isfile(str(image_path))))} "
+                        f"ply_exists={int(bool(ply_path and os.path.isfile(str(ply_path))))} "
+                        f"spz_exists={int(bool(spz_path and os.path.isfile(str(spz_path))))}"
+                    )
+            except Exception:
+                pass
+            if not hf_utils.should_retry_with_pr(e):
+                raise
+            with _commit_lock:
+                api.create_commit(
+                    repo_id=repo_id,
+                    repo_type=repo_type,
+                    operations=ops,
+                    commit_message=f"add {image_id}",
+                    create_pr=True,
+                )
+    finally:
+        try:
+            if f_spz is not None:
+                f_spz.close()
+        except Exception:
+            pass
+        try:
+            if f_ply is not None:
+                f_ply.close()
+        except Exception:
+            pass
+        try:
+            if f_img is not None:
+                f_img.close()
+        except Exception:
+            pass
     try:
-        commit_s = max(0.0, float(time.time()) - float(commit_t0))
-        metrics.emit(
-            "hf_commit_done",
-            debug_fn=debug_fn,
-            image_id=str(image_id),
-            s=float(commit_s),
-            ops=int(len(ops or [])),
-            **metrics.snapshot(),
-        )
+        if commit_t0 is not None:
+            commit_s = max(0.0, float(time.time()) - float(commit_t0))
+            metrics.emit(
+                "hf_commit_done",
+                debug_fn=debug_fn,
+                image_id=str(image_id),
+                s=float(commit_s),
+                ops=int(len(ops or [])),
+                **metrics.snapshot(),
+            )
     except Exception:
         pass
 
@@ -424,6 +463,7 @@ def upload_sample_pairs(
     api = HfApi()
     ops = []
     per = {}
+    opened = []
 
     for t in tasks:
         if not isinstance(t, dict):
@@ -514,16 +554,48 @@ def upload_sample_pairs(
         except Exception:
             pass
 
-        ops.append(CommitOperationAdd(path_in_repo=rel_img, path_or_fileobj=image_path))
-        ops.append(CommitOperationAdd(path_in_repo=rel_ply, path_or_fileobj=ply_path))
+        try:
+            f_img = open(str(image_path), "rb")
+            opened.append(f_img)
+        except Exception:
+            try:
+                if debug_fn:
+                    debug_fn(f"HF 上传跳过：无法打开 image_path | id={str(image_id)} | path={str(image_path)}")
+            except Exception:
+                pass
+            continue
+        try:
+            f_ply = open(str(ply_path), "rb")
+            opened.append(f_ply)
+        except Exception:
+            try:
+                if debug_fn:
+                    debug_fn(f"HF 上传跳过：无法打开 ply_path | id={str(image_id)} | path={str(ply_path)}")
+            except Exception:
+                pass
+            continue
+
+        ops.append(CommitOperationAdd(path_in_repo=rel_img, path_or_fileobj=f_img))
+        ops.append(CommitOperationAdd(path_in_repo=rel_ply, path_or_fileobj=f_ply))
         if spz_path and rel_spz:
-            ops.append(CommitOperationAdd(path_in_repo=rel_spz, path_or_fileobj=spz_path))
+            try:
+                f_spz = open(str(spz_path), "rb")
+                opened.append(f_spz)
+                ops.append(CommitOperationAdd(path_in_repo=rel_spz, path_or_fileobj=f_spz))
+            except Exception:
+                try:
+                    if debug_fn:
+                        debug_fn(f"HF SPZ 跳过：无法打开 spz_path | id={str(image_id)} | path={str(spz_path)}")
+                except Exception:
+                    pass
 
         per[image_id] = {
             "rel_img": rel_img,
             "rel_ply": rel_ply,
             "rel_spz": rel_spz,
+            "image_path": image_path,
             "ply_path": ply_path,
+            "spz_path": spz_path or "",
             "jpg_sha256": str(image_sha256 or ""),
             "ply_sha256": str(ply_sha256 or ""),
             "spz_sha256": str(spz_sha256 or ""),
@@ -535,39 +607,65 @@ def upload_sample_pairs(
     if not ops:
         return {}
 
-    commit_t0 = float(time.time())
-
+    commit_t0 = None
     try:
-        _create_commit_retry(
-            api,
-            repo_id=repo_id,
-            repo_type=repo_type,
-            operations=ops,
-            commit_message=f"add batch {len(per)}",
-            debug_fn=debug_fn,
-        )
-    except Exception as e:
-        if not hf_utils.should_retry_with_pr(e):
-            raise
-        with _commit_lock:
-            api.create_commit(
+        commit_t0 = float(time.time())
+
+        try:
+            _create_commit_retry(
+                api,
                 repo_id=repo_id,
                 repo_type=repo_type,
                 operations=ops,
                 commit_message=f"add batch {len(per)}",
-                create_pr=True,
+                debug_fn=debug_fn,
             )
+        except Exception as e:
+            try:
+                if debug_fn:
+                    debug_fn(f"HF create_commit(batch) 失败（将决定是否走 PR） | items={len(per)}")
+                    shown = 0
+                    for iid, meta in (per or {}).items():
+                        ip = str(meta.get("image_path") or "")
+                        pp = str(meta.get("ply_path") or "")
+                        sp = str(meta.get("spz_path") or "")
+                        debug_fn(
+                            f"HF batch probe | id={str(iid)} | img_exists={int(bool(ip and os.path.isfile(ip)))} "
+                            f"ply_exists={int(bool(pp and os.path.isfile(pp)))} spz_exists={int(bool(sp and os.path.isfile(sp)))}"
+                        )
+                        shown += 1
+                        if shown >= 3:
+                            break
+            except Exception:
+                pass
+            if not hf_utils.should_retry_with_pr(e):
+                raise
+            with _commit_lock:
+                api.create_commit(
+                    repo_id=repo_id,
+                    repo_type=repo_type,
+                    operations=ops,
+                    commit_message=f"add batch {len(per)}",
+                    create_pr=True,
+                )
+    finally:
+        for f in opened:
+            try:
+                f.close()
+            except Exception:
+                pass
 
     try:
-        commit_s = max(0.0, float(time.time()) - float(commit_t0))
-        metrics.emit(
-            "hf_commit_batch_done",
-            debug_fn=debug_fn,
-            s=float(commit_s),
-            ops=int(len(ops or [])),
-            batch_n=int(len(per or {})),
-            **metrics.snapshot(),
-        )
+        if commit_t0 is not None:
+            commit_s = max(0.0, float(time.time()) - float(commit_t0))
+            metrics.emit(
+                "hf_commit_batch_done",
+                debug_fn=debug_fn,
+                s=float(commit_s),
+                ops=int(len(ops or [])),
+                batch_n=int(len(per or {})),
+                **metrics.snapshot(),
+            )
     except Exception:
         pass
 
