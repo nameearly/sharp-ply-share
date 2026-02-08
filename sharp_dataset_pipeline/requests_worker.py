@@ -705,7 +705,7 @@ def run_once():
     if stop_requested():
         return {"mode": "", "ingested": 0, "processed": 0}
 
-    repo_id = _env_str("HF_REPO_ID", "eatmorefruit/sharp-ply-share").strip()
+    repo_id = _env_str("HF_REPO_ID", "sharp-ply-share/sharp-ply-share").strip()
     repo_type = _env_str("HF_REPO_TYPE", "dataset").strip().lower() or "dataset"
 
     dry_run = _env_flag("REQ_DRY_RUN", False)

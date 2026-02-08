@@ -114,7 +114,7 @@ Recommended:
 ### Hugging Face upload
 
 - `HF_UPLOAD`: enable upload (default: `1`)
-- `HF_REPO_ID`: target repo (default: `eatmorefruit/sharp-ply-share`)
+- `HF_REPO_ID`: target repo (default: `sharp-ply-share/sharp-ply-share`)
 - `HF_REPO_TYPE`: `dataset` or `model` (default: `dataset`)
 - `HF_SUBDIR`: subdir for assets (default: `unsplash`)
 - `HF_USE_LOCKS`: enable per-image locks (default: `1`)

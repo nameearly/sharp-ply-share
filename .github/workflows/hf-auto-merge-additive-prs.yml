@@ -34,7 +34,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HUGGINGFACE_HUB_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_REPO_ID: eatmorefruit/sharp-ply-share
+          HF_REPO_ID: sharp-ply-share/sharp-ply-share
           HF_REPO_TYPE: dataset
         run: |
           python - << 'PY'
@@ -46,30 +46,6 @@ jobs:
           import time
           from datetime import datetime, timezone
           from huggingface_hub import HfApi
-
-
-          def ensure_coworker_discussion(api: HfApi, *, repo_id: str, repo_type: str) -> None:
-              title = "coworker registration"
-              body = "for automation"
-              try:
-                  for d in api.get_repo_discussions(
-                      repo_id=repo_id,
-                      repo_type=repo_type,
-                      discussion_type="discussion",
-                      discussion_status="open",
-                  ):
-                      try:
-                          if str(getattr(d, "title", "") or "").strip() == title:
-                              return
-                      except Exception:
-                          continue
-              except Exception:
-                  pass
-              try:
-                  api.create_discussion(repo_id=repo_id, repo_type=repo_type, title=title, description=body)
-              except Exception as e:
-                  print(f"WARN: create coworker discussion failed: {e}")
-
 
           def _env_str(k: str, default: str = "") -> str:
               v = os.getenv(k)
@@ -135,9 +111,10 @@ jobs:
 
               api = HfApi(token=token)
 
-              ensure_coworker_discussion(api, repo_id=repo_id, repo_type=repo_type)
-
               def cleanup_expired_coworker_prs() -> None:
+                  v = str(os.getenv("HF_COWORKER_PR_CLEANUP", "") or "").strip().lower()
+                  if v not in ("1", "true", "yes", "y", "on"):
+                      return
                   try:
                       ttl_s = float(os.getenv("HF_COWORKER_PR_TTL_SECS", "1800") or "1800")
                   except Exception:
@@ -202,114 +179,6 @@ jobs:
 
               cleanup_expired_coworker_prs()
 
-              def update_coworkers_active() -> None:
-                  ttl_s = 1800.0
-                  try:
-                      ttl_s = float(os.getenv("HF_COWORKER_TTL_SECS", "1800") or "1800")
-                  except Exception:
-                      ttl_s = 1800.0
-                  if ttl_s <= 0:
-                      ttl_s = 1800.0
-
-                  base = str(os.getenv("HF_COWORKERS_DIR", "coworkers") or "coworkers").strip().strip("/")
-                  events_prefix = f"{base}/events" if base else "events"
-                  active_path = f"{base}/active.json" if base else "active.json"
-
-                  latest_by_session = {}
-                  try:
-                      for ent in api.list_repo_tree(
-                          repo_id=repo_id,
-                          repo_type=repo_type,
-                          path_in_repo=events_prefix,
-                          recursive=True,
-                      ):
-                          p = None
-                          for attr in ("path", "path_in_repo", "rfilename"):
-                              if hasattr(ent, attr):
-                                  try:
-                                      p = getattr(ent, attr)
-                                      break
-                                  except Exception:
-                                      p = None
-                          if not p:
-                              continue
-                          p = str(p)
-                          m = re.search(r"/(\d+)_([a-zA-Z0-9._-]+)\.json$", p)
-                          if not m:
-                              continue
-                          tsms = int(m.group(1))
-                          kind = str(m.group(2))
-                          parts = [x for x in p.split("/") if x]
-                          try:
-                              i = parts.index("events")
-                          except Exception:
-                              try:
-                                  i = parts.index(str(events_prefix).split("/")[-1])
-                              except Exception:
-                                  i = -1
-                          if i < 0 or len(parts) < i + 4:
-                              continue
-                          owner = parts[i + 1]
-                          sess = parts[i + 2]
-                          key = (owner, sess)
-                          prev = latest_by_session.get(key)
-                          if prev is None or tsms > int(prev.get("tsms", 0)):
-                              latest_by_session[key] = {"tsms": tsms, "kind": kind}
-                  except Exception:
-                      latest_by_session = {}
-
-                  active_by_owner = {}
-                  for (owner, sess), rec in (latest_by_session or {}).items():
-                      try:
-                          kind = str(rec.get("kind") or "")
-                          if kind == "end":
-                              continue
-                          ts = float(int(rec.get("tsms") or 0)) / 1000.0
-                          if ts <= 0:
-                              continue
-                          exp = float(ts) + float(ttl_s)
-                          cur = active_by_owner.get(owner)
-                          if cur is None or float(cur.get("last_ts") or 0.0) < float(ts):
-                              active_by_owner[owner] = {"owner": str(owner), "last_ts": float(ts), "expires_ts": float(exp)}
-                      except Exception:
-                          continue
-
-                  payload = {
-                      "v": 1,
-                      "ttl_s": float(ttl_s),
-                      "active": [active_by_owner[k] for k in sorted(active_by_owner.keys())],
-                  }
-                  blob = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
-
-                  old = None
-                  try:
-                      from huggingface_hub import hf_hub_download
-
-                      old = hf_hub_download(repo_id=repo_id, repo_type=repo_type, filename=active_path)
-                  except Exception:
-                      old = None
-
-                  if old:
-                      try:
-                          with open(old, "rb") as f:
-                              old_b = f.read()
-                          if old_b == blob:
-                              return
-                      except Exception:
-                          pass
-
-                  try:
-                      from huggingface_hub import CommitOperationAdd
-
-                      api.create_commit(
-                          repo_id=repo_id,
-                          repo_type=repo_type,
-                          operations=[CommitOperationAdd(path_in_repo=active_path, path_or_fileobj=io.BytesIO(blob))],
-                          commit_message="update coworkers/active.json",
-                      )
-                  except Exception as e:
-                      print(f"WARN: update active.json failed: {e}")
-
               def run_once() -> tuple[int, int, int, int]:
                   merged = 0
                   skipped = 0
@@ -348,11 +217,6 @@ jobs:
                   return (0 if errors == 0 else 1, merged, skipped, errors)
 
               rc, merged, skipped, errors = run_once()
-
-              try:
-                  update_coworkers_active()
-              except Exception as e:
-                  print(f"WARN: update_coworkers_active failed: {e}")
 
               did_work = "1" if int(merged) > 0 else "0"
               gh_out = os.getenv("GITHUB_OUTPUT")

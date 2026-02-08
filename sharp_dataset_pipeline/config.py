@@ -80,7 +80,7 @@ SKIP_PREDICT = _env_flag("SKIP_PREDICT", False)
 
 HF_UPLOAD = _env_flag("HF_UPLOAD", True)
 REQUIRE_HF_UPLOAD = _env_flag("REQUIRE_HF_UPLOAD", False)
-HF_REPO_ID = _env_str("HF_REPO_ID", "eatmorefruit/sharp-ply-share").strip()
+HF_REPO_ID = _env_str("HF_REPO_ID", "sharp-ply-share/sharp-ply-share").strip()
 HF_SUBDIR = _env_str("HF_SUBDIR", "unsplash").strip().strip("/")
 HF_INDEX_REPO_PATH = _env_str("HF_INDEX_REPO_PATH", "data/train.jsonl").strip().lstrip("/")
 

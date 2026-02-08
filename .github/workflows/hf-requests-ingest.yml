@@ -34,7 +34,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HUGGINGFACE_HUB_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_REPO_ID: eatmorefruit/sharp-ply-share
+          HF_REPO_ID: sharp-ply-share/sharp-ply-share
           HF_REPO_TYPE: dataset
           REQ_MODE: ingest
           REQ_ONCE: "1"

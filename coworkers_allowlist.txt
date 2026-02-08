@@ -1,0 +1,3 @@
+# One Hugging Face username per line.
+# This file is used by the GitHub Action to verify that all listed coworkers are members of the HF organization.
+# Lines starting with # are ignored.

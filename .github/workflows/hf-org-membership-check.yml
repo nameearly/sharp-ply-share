@@ -1,0 +1,149 @@
+name: HF Org Membership Check
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 */6 * * *"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "huggingface_hub>=0.35.0"
+          python -m pip install "requests>=2.31.0"
+
+      - name: Ensure coworkers are org members (auto-invite)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HUGGINGFACE_HUB_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_ORG: sharp-ply-share
+          HF_ALLOWLIST_PATH: coworkers_allowlist.txt
+        run: |
+          python - << 'PY'
+          import os
+          import re
+          import sys
+          
+
+          import requests
+          from huggingface_hub import HfApi
+
+          org = (os.getenv("HF_ORG") or "").strip()
+          allow_path = (os.getenv("HF_ALLOWLIST_PATH") or "coworkers_allowlist.txt").strip()
+
+          if not org:
+              print("Missing HF_ORG", file=sys.stderr)
+              raise SystemExit(2)
+
+          if not os.path.exists(allow_path):
+              print(f"Missing allowlist file: {allow_path}", file=sys.stderr)
+              raise SystemExit(2)
+
+          wanted = []
+          with open(allow_path, "r", encoding="utf-8") as f:
+              for line in f:
+                  s = (line or "").strip()
+                  if not s or s.startswith("#"):
+                      continue
+                  wanted.append(s)
+
+          wanted = sorted(set(wanted))
+          if not wanted:
+              print("Allowlist is empty; nothing to check.")
+              raise SystemExit(0)
+
+          api = HfApi(token=os.getenv("HF_TOKEN") or None)
+
+          token = (os.getenv("HF_TOKEN") or "").strip()
+          if not token:
+              print("Missing HF_TOKEN", file=sys.stderr)
+              raise SystemExit(2)
+
+          base = "https://huggingface.co"
+          members_settings_url = f"{base}/organizations/{org}/settings/members"
+          invite_url = f"{base}/organizations/{org}/settings/members/invite"
+
+          session = requests.Session()
+          session.headers.update(
+              {
+                  "Authorization": f"Bearer {token}",
+                  "User-Agent": "sharp-ply-share-bot/1.0",
+              }
+          )
+
+          members = set()
+          for u in api.list_organization_members(org):
+              try:
+                  members.add(str(getattr(u, "username", "") or "").strip())
+              except Exception:
+                  continue
+
+          missing = [u for u in wanted if u not in members]
+          if missing:
+              print("Missing org members; attempting to invite with role=write:")
+              for u in missing:
+                  print("-", u)
+
+              r = session.get(members_settings_url, timeout=30)
+              if r.status_code >= 400:
+                  print(f"Failed to load members settings page for csrf: {r.status_code}", file=sys.stderr)
+                  raise SystemExit(1)
+
+              m = re.search(r'name="csrf"\s+value="([^"]+)"', r.text)
+              if not m:
+                  m = re.search(r'"csrf"\s*:\s*"([^"]+)"', r.text)
+              if not m:
+                  print("Failed to extract csrf token from members settings page", file=sys.stderr)
+                  raise SystemExit(1)
+
+              csrf = m.group(1)
+
+              for u in missing:
+                  data = {"csrf": csrf, "username": u, "role": "write"}
+                  rr = session.post(invite_url, data=data, timeout=30, allow_redirects=False)
+                  if rr.status_code not in (200, 302):
+                      print(f"Invite failed for {u}: status={rr.status_code}", file=sys.stderr)
+                      if rr.text:
+                          print(rr.text[:500], file=sys.stderr)
+                      continue
+
+                  # Fallback: ensure role=write via API (may require paid plan depending on org)
+                  try:
+                      role_url = f"{base}/api/organizations/{org}/members/{u}/role"
+                      pr = session.put(role_url, json={"role": "write"}, timeout=30)
+                      if pr.status_code >= 400:
+                          print(f"Role set failed for {u}: status={pr.status_code}", file=sys.stderr)
+                  except Exception as e:
+                      print(f"Role set exception for {u}: {e}", file=sys.stderr)
+
+              # Re-check membership after inviting
+              members2 = set()
+              for uu in api.list_organization_members(org):
+                  try:
+                      members2.add(str(getattr(uu, "username", "") or "").strip())
+                  except Exception:
+                      continue
+
+              still_missing = [u for u in wanted if u not in members2]
+              if still_missing:
+                  print("Still missing org members after invite attempt:")
+                  for u in still_missing:
+                      print("-", u)
+                  raise SystemExit(1)
+
+          print(f"OK: all {len(wanted)} coworkers are members of org '{org}'.")
+          PY

@@ -19,7 +19,7 @@ configs:
 You can reconstruct URLs from ids:
 
 - Unsplash photo page: `https://unsplash.com/photos/<image_id>`
-- HF resolve URL (dataset): `https://huggingface.co/datasets/eatmorefruit/sharp-ply-share/resolve/main/unsplash/<image_id>/<image_id>.<ext>`
+- HF resolve URL (dataset): `https://huggingface.co/datasets/sharp-ply-share/sharp-ply-share/resolve/main/unsplash/<image_id>/<image_id>.<ext>`
 - gsplat viewer URL (if `gsplat_share_id` present): `https://gsplat.org/viewer/<gsplat_share_id>`
 
 If you need the original gsplat share file path, reconstruct:
@@ -63,7 +63,7 @@ Each row in `data/train.jsonl` is a JSON object with stable (string) types for f
 ## Links
 
 - GitHub (pipeline code): https://github.com/nameearly/sharp-ply-share
-- Hugging Face (dataset): https://huggingface.co/datasets/eatmorefruit/sharp-ply-share
+- Hugging Face (dataset): https://huggingface.co/datasets/sharp-ply-share/sharp-ply-share
 
 ## Licensing
 
