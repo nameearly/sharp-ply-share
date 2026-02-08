@@ -8,6 +8,7 @@ import shutil
 import time
 
 from . import metrics
+from . import url_safety
 
 
 def make_small_ply(
@@ -364,6 +365,27 @@ def trpc_post(base_url: str, path: str, payload: dict, *, debug_fn) -> dict | No
         tries = max(1, min(10, int(tries)))
 
         import requests
+
+        try:
+            bu = url_safety.validate_external_url(str(base_url or "").strip())
+            host = ""
+            try:
+                from urllib.parse import urlparse
+
+                host = (urlparse(bu).netloc or "").split("@")[-1].split(":", 1)[0].strip().lower()
+            except Exception:
+                host = ""
+            allow_any = str(os.getenv("GSPLAT_ALLOW_ANY_BASE", "0") or "0").strip().lower() in ("1", "true", "yes", "y")
+            if (not allow_any) and host and (host != "gsplat.org") and (not host.endswith(".gsplat.org")):
+                raise ValueError(f"disallowed GSPLAT_BASE host: {host}")
+            base_url = bu
+        except Exception as e:
+            try:
+                if debug_fn:
+                    debug_fn(f"GSPLAT: invalid base_url | base={str(base_url)[:200]} | err={e}")
+            except Exception:
+                pass
+            return None
 
         url = f"{str(base_url).rstrip('/')}{path}"
         try:

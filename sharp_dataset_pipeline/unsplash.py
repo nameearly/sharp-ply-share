@@ -5,7 +5,7 @@ import threading
 import subprocess
 import time
 import re
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from typing import List, Dict, Optional, Any, Callable, Union
 from datetime import datetime
 
@@ -41,12 +41,26 @@ _API_REQ_LOCK = threading.Lock()
 _debug = None
 
 
-def _session_get(url: str, **kwargs):
+def _is_unsplash_api_url(url: str) -> bool:
     try:
-        s = str(url or "")
+        s = str(url or "").strip()
     except Exception:
-        s = ""
-    if "api.unsplash.com" in s:
+        return False
+    if not s:
+        return False
+    try:
+        p = urlparse(s)
+        host = str(p.netloc or "").split("@")[-1]
+        host = host.split(":", 1)[0].lower()
+        if not host:
+            return False
+        return host == "api.unsplash.com" or host.endswith(".api.unsplash.com")
+    except Exception:
+        return False
+
+
+def _session_get(url: str, **kwargs):
+    if _is_unsplash_api_url(url):
         with _API_REQ_LOCK:
             return _session.get(url, **kwargs)
     return _session.get(url, **kwargs)
@@ -1025,7 +1039,7 @@ def download_image(download_location, output_path):
         tries += 1
         try:
             try:
-                if "api.unsplash.com" in str(download_url or ""):
+                if _is_unsplash_api_url(download_url):
                     _ensure_key_for_request()
                     if _STOP_ON_RATE_LIMIT and _rate_limited:
                         return False

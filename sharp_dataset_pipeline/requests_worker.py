@@ -16,6 +16,7 @@ from . import hf_sync
 from . import hf_upload
 from . import hf_utils
 from . import unsplash
+from . import url_safety
 
 _env_str = hf_utils.env_str
 _env_int = hf_utils.env_int
@@ -326,7 +327,12 @@ def _download_url_to_file(url: str, out_path: str) -> bool:
             return False
         tries += 1
         try:
-            r = requests.get(url, timeout=30, stream=True, headers={"User-Agent": "sharp-ply-share"})
+            r = url_safety.safe_requests_get(
+                url,
+                timeout=30,
+                stream=True,
+                headers={"User-Agent": "sharp-ply-share"},
+            )
             if r.status_code != 200:
                 if tries >= 3:
                     return False
@@ -567,7 +573,7 @@ def _try_load_manifest(manifest_url: str) -> list[dict]:
         u = str(manifest_url or "").strip()
         if not u:
             return []
-        r = requests.get(u, timeout=30)
+        r = url_safety.safe_requests_get(u, timeout=30, stream=False, headers=None)
         if r.status_code != 200:
             return []
         obj = r.json()
