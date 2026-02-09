@@ -298,7 +298,7 @@ def _enqueue_downloaded_image(
     return False
 
 
-def _cleanup_local_outputs(cfg: PipelineConfig, *, primary_path: str, debug_fn) -> None:
+def _cleanup_local_outputs(cfg: PipelineConfig, *, primary_path: str, debug_fn) -> bool:
     try:
         ga = os.path.normcase(os.path.abspath(str(cfg.gaussians_dir)))
         ap = os.path.normcase(os.path.abspath(str(primary_path)))
@@ -309,21 +309,21 @@ def _cleanup_local_outputs(cfg: PipelineConfig, *, primary_path: str, debug_fn) 
             except Exception:
                 return False
 
-        def _rm(path: str, root: str):
+        def _rm(path: str, root: str) -> bool:
             try:
                 pp = os.path.normcase(os.path.abspath(str(path)))
                 rr = os.path.normcase(os.path.abspath(str(root)))
                 if _inside(pp, rr) and os.path.isfile(pp):
                     try:
                         os.remove(pp)
-                        return
+                        return True
                     except PermissionError:
                         last_err = None
                         for i in range(8):
                             try:
                                 time.sleep(0.15 + 0.15 * i + random.random() * 0.1)
                                 os.remove(pp)
-                                return
+                                return True
                             except PermissionError as e:
                                 last_err = e
                                 continue
@@ -334,15 +334,16 @@ def _cleanup_local_outputs(cfg: PipelineConfig, *, primary_path: str, debug_fn) 
                             ts = int(time.time() * 1000)
                             tmp = os.path.join(os.path.dirname(pp), f".{base}.deleting.{ts}")
                             os.replace(pp, tmp)
-                            return
+                            return True
                         except Exception:
-                            if last_err is not None:
-                                raise last_err
-                            raise
+                            return False
+                return True
             except Exception as e:
                 _log_exc(debug_fn, f"本地清理失败 | path={str(path)}", e)
+                return False
 
-        _rm(ap, ga)
+        ok = True
+        ok = bool(_rm(ap, ga)) and ok
 
         try:
             base = os.path.splitext(os.path.basename(ap))[0]
@@ -367,10 +368,10 @@ def _cleanup_local_outputs(cfg: PipelineConfig, *, primary_path: str, debug_fn) 
                 ".small.gsplat.ply",
                 ".small.gsplat.vertexonly.binary.ply",
             ):
-                _rm(os.path.join(ga, canon + suf), ga)
+                ok = bool(_rm(os.path.join(ga, canon + suf), ga)) and ok
             try:
                 for p in glob.glob(os.path.join(ga, canon + ".small.gsplat.*.ply")):
-                    _rm(p, ga)
+                    ok = bool(_rm(p, ga)) and ok
             except Exception:
                 pass
 
@@ -381,11 +382,12 @@ def _cleanup_local_outputs(cfg: PipelineConfig, *, primary_path: str, debug_fn) 
                     img_root = ""
                 for ext in (".jpg", ".jpeg"):
                     if img_root:
-                        _rm(os.path.join(img_root, canon + ext), img_root)
+                        ok = bool(_rm(os.path.join(img_root, canon + ext), img_root)) and ok
             except Exception:
                 pass
+        return bool(ok)
     except Exception:
-        return
+        return False
 
 
 def upload_worker(
@@ -565,6 +567,18 @@ def upload_worker(
             results = None
             if (upload_sample_pairs_fn is not None) and len(valid) > 1:
                 results = upload_sample_pairs_fn(repo_id=cfg.hf_repo_id, tasks=valid)
+
+            cleanup_q = None
+            try:
+                with lock:
+                    cleanup_q = counters.get("cleanup_q")
+                    if cleanup_q is None:
+                        cleanup_q = deque()
+                        counters["cleanup_q"] = cleanup_q
+            except Exception:
+                cleanup_q = None
+
+            batch_delete_candidates = []
             for item in valid:
                 info = None
                 if isinstance(results, dict) and results:
@@ -662,7 +676,10 @@ def upload_worker(
                         to_delete = None
 
                 if to_delete:
-                    _cleanup_local_outputs(cfg, primary_path=str(to_delete), debug_fn=debug_fn)
+                    try:
+                        batch_delete_candidates.append(str(to_delete))
+                    except Exception:
+                        pass
 
                 do_squash = False
                 with lock:
@@ -673,6 +690,41 @@ def upload_worker(
                 if do_squash:
                     debug_fn(f"触发 HF super-squash | uploaded={uploaded}")
                     threading.Thread(target=try_super_squash_fn, args=(cfg.hf_repo_id,), daemon=True).start()
+
+            # Batch-aware cleanup: perform deletions after the whole HF commit/batch is done.
+            try:
+                if cleanup_q is not None:
+                    for p in (batch_delete_candidates or []):
+                        try:
+                            cleanup_q.append(str(p))
+                        except Exception:
+                            pass
+                else:
+                    cleanup_q = deque(batch_delete_candidates or [])
+            except Exception:
+                cleanup_q = deque(batch_delete_candidates or [])
+
+            try:
+                budget = max(1, int(len(valid) or 1))
+            except Exception:
+                budget = 1
+
+            processed = 0
+            while cleanup_q and processed < budget:
+                try:
+                    p = cleanup_q.popleft()
+                except Exception:
+                    break
+                if not p:
+                    continue
+                ok = _cleanup_local_outputs(cfg, primary_path=str(p), debug_fn=debug_fn)
+                if not ok:
+                    try:
+                        cleanup_q.append(str(p))
+                    except Exception:
+                        pass
+                    break
+                processed += 1
         except KeyboardInterrupt:
             try:
                 if (not stop_event.is_set()) and (not stop_requested(cfg)):
