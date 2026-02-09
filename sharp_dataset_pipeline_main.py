@@ -343,6 +343,7 @@ _resident_device_name = None
 def _run_sharp_predict_once(input_path: str) -> List[str]:
     try:
         import logging
+        import time
         from pathlib import Path
 
         import torch
@@ -385,6 +386,12 @@ def _run_sharp_predict_once(input_path: str) -> List[str]:
             _resident_predictor = predictor
 
             try:
+                if _resident_device_name == "cuda":
+                    torch.backends.cudnn.benchmark = True
+            except Exception:
+                pass
+
+            try:
                 logging.getLogger("sharp").setLevel(logging.DEBUG if config.SHARP_VERBOSE else logging.INFO)
             except Exception:
                 pass
@@ -403,14 +410,65 @@ def _run_sharp_predict_once(input_path: str) -> List[str]:
                 image_paths.extend(list(in_path.glob(f"**/*{ext}")))
 
         produced: List[str] = []
-        for image_path in image_paths:
-            image, _, f_px = io.load_rgb(image_path)
-            height, width = image.shape[:2]
 
-            gaussians = predict_image(_resident_predictor, image, f_px, _resident_device)
-            ply_path = os.path.join(out_dir, f"{image_path.stem}.ply")
-            save_ply(gaussians, f_px, (height, width), Path(ply_path))
-            produced.append(str(ply_path))
+        profile = str(os.getenv("SHARP_PROFILE", "") or "").strip().lower() in ("1", "true", "yes", "y")
+        use_amp = False
+
+        def _autocast_ctx():
+            try:
+                if use_amp:
+                    return torch.autocast(device_type="cuda", dtype=torch.float16)
+            except Exception:
+                return None
+            return None
+
+        with torch.inference_mode():
+            for image_path in image_paths:
+                t0 = time.perf_counter()
+                image, _, f_px = io.load_rgb(image_path)
+                t1 = time.perf_counter()
+                height, width = image.shape[:2]
+
+                ac = _autocast_ctx()
+                if ac is None:
+                    gaussians = predict_image(_resident_predictor, image, f_px, _resident_device)
+                else:
+                    try:
+                        with ac:
+                            gaussians = predict_image(_resident_predictor, image, f_px, _resident_device)
+                    except Exception as amp_e:
+                        msg = str(amp_e)
+                        if ("Low precision dtypes not supported" in msg) or ("Got Half" in msg):
+                            try:
+                                gaussians = predict_image(_resident_predictor, image, f_px, _resident_device)
+                                use_amp = False
+                            except Exception:
+                                raise
+                        else:
+                            raise
+                t2 = time.perf_counter()
+
+                ply_path = os.path.join(out_dir, f"{image_path.stem}.ply")
+                save_ply(gaussians, f_px, (height, width), Path(ply_path))
+                t3 = time.perf_counter()
+
+                if profile:
+                    try:
+                        if _resident_device_name == "cuda":
+                            torch.cuda.synchronize()
+                    except Exception:
+                        pass
+                    print_debug(
+                        "resident sharp profile | "
+                        f"img={image_path.name} "
+                        f"load_s={t1 - t0:.3f} "
+                        f"infer_s={t2 - t1:.3f} "
+                        f"save_s={t3 - t2:.3f} "
+                        f"total_s={t3 - t0:.3f} "
+                        f"amp={int(bool(use_amp))} dev={_resident_device_name}"
+                    )
+
+                produced.append(str(ply_path))
 
         return produced
     except Exception as e:
