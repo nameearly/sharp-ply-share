@@ -8,6 +8,8 @@ import queue
 import signal
 import traceback
 import glob
+import shutil
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any, Set, Callable, Tuple
@@ -258,6 +260,7 @@ def _maybe_inject_focal_exif(
     details: dict,
     local_has_focal_exif_fn,
     inject_focal_exif_if_missing_fn,
+    debug_fn: Optional[Callable[[str], None]] = None,
 ) -> None:
     # Strategy A: missing EXIF focal length is OK.
     # If `FocalLength` is missing, ml-sharp (`sharp predict`) falls back to a default focal length (currently 30mm).
@@ -267,8 +270,22 @@ def _maybe_inject_focal_exif(
         details_exif = details or unsplash.fetch_photo_details(photo_id)
         focal_raw = ((details_exif or {}).get("exif") or {}).get("focal_length")
         _a, _b, _c, focal_avg = unsplash.parse_focal_length(focal_raw)
-        if focal_avg is not None:
-            inject_focal_exif_if_missing_fn(out_path, focal_avg)
+        if focal_avg is None:
+            try:
+                _debug(debug_fn, f"inject_exif skip | id={str(photo_id)} | focal_raw={str(focal_raw)}")
+            except Exception:
+                pass
+            return
+
+        ok = False
+        try:
+            ok = bool(inject_focal_exif_if_missing_fn(out_path, focal_avg))
+        except Exception:
+            ok = False
+        try:
+            _debug(debug_fn, f"inject_exif | id={str(photo_id)} | focal_mm={round(float(focal_avg), 3)} | ok={int(bool(ok))}")
+        except Exception:
+            pass
     except Exception:
         return
 
@@ -793,130 +810,234 @@ def predict_worker(
             image_q.task_done()
             break
 
+        batch = [item]
+        try:
+            bs = int(os.getenv("SHARP_BATCH_SIZE", "0") or "0")
+        except Exception:
+            bs = 0
+        if bs > 1:
+            # Opportunistically pull more items without blocking too long.
+            want = max(0, int(bs) - 1)
+            for _ in range(want):
+                if stop_event.is_set() or stop_requested(cfg):
+                    break
+                try:
+                    nxt = image_q.get(timeout=0.05)
+                except Exception:
+                    break
+                if nxt is None:
+                    image_q.task_done()
+                    stop_event.set()
+                    break
+                batch.append(nxt)
+
         wait_if_paused(cfg, stop_event)
         if stop_event.is_set() or stop_requested(cfg):
-            image_q.task_done()
+            try:
+                for _ in (batch or [None]):
+                    image_q.task_done()
+            except Exception:
+                try:
+                    image_q.task_done()
+                except Exception:
+                    pass
             break
         try:
             with lock:
-                counters["predict_inflight"] = int(counters.get("predict_inflight", 0)) + 1
+                counters["predict_inflight"] = int(counters.get("predict_inflight", 0)) + int(len(batch) or 1)
         except Exception:
             pass
-        try:
-            image_id = item["image_id"]
-            image_path = item["image_path"]
-            meta = item.get("meta") if isinstance(item, dict) else None
-            dl = item.get("download_location") if isinstance(item, dict) else None
-            _wait_for_api_slot(cfg, stop_event)
-            
-            # Persistent queue logic: save task before processing
-            if index_sync is not None:
-                try:
-                    index_sync.add_to_queue(item)
-                except Exception:
-                    pass
 
-            started_ts = time.time()
+        started_ts = time.time()
+        produced_plys = []
+        try:
+            _wait_for_api_slot(cfg, stop_event)
             try:
                 with lock:
-                    counters["predict_image_id"] = str(image_id)
+                    try:
+                        counters["predict_image_id"] = str((batch[0] or {}).get("image_id") or "")
+                    except Exception:
+                        counters["predict_image_id"] = ""
                     counters["predict_started_ts"] = float(started_ts)
             except Exception:
                 pass
-            _debug(
-                debug_fn,
-                f"{'SKIP_PREDICT' if bool(getattr(run_sharp_predict_once_fn, '_skip_predict', False)) else 'ml-sharp'} | id={image_id} | input={image_path}",
-            )
-            try:
+
+            for it in (batch or []):
                 try:
-                    if (not os.path.isfile(str(image_path))) and dl:
-                        try:
-                            os.makedirs(os.path.dirname(str(image_path)), exist_ok=True)
-                            unsplash.download_image(str(dl), str(image_path))
-                        except Exception:
-                            pass
+                    if index_sync is not None:
+                        index_sync.add_to_queue(it)
                 except Exception:
                     pass
-                if not os.path.isfile(str(image_path)):
-                    raise FileNotFoundError(str(image_path))
-                plys = run_sharp_predict_once_fn(image_path)
-            except KeyboardInterrupt:
-                try:
-                    if (not stop_event.is_set()) and (not stop_requested(cfg)):
-                        max_retry = 2
-                        try:
-                            if isinstance(item, dict):
-                                r = int(item.get("_kb_retries", 0) or 0)
-                                if r < int(max_retry):
-                                    item["_kb_retries"] = int(r) + 1
-                                    image_q.put(item)
-                                else:
-                                    touch_stop_file(cfg)
-                                    stop_event.set()
-                        except Exception:
-                            try:
-                                image_q.put(item)
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-                plys = []
-            except Exception as e:
-                _log_exc(debug_fn, f"predict 失败 | id={str(image_id)} | input={str(image_path)}", e)
-                plys = []
+
             try:
-                took_s = max(0.0, float(time.time()) - float(started_ts))
-                _debug(debug_fn, f"predict done | id={image_id} | plys={int(len(plys or []))} | s={round(took_s, 2)}")
-            except Exception:
-                pass
-            try:
-                took_s = max(0.0, float(time.time()) - float(started_ts))
-                metrics.emit(
-                    "predict_done",
-                    debug_fn=debug_fn,
-                    image_id=str(image_id),
-                    plys=int(len(plys or [])),
-                    s=float(took_s),
-                    **metrics.snapshot(),
+                _debug(
+                    debug_fn,
+                    f"{'SKIP_PREDICT' if bool(getattr(run_sharp_predict_once_fn, '_skip_predict', False)) else 'ml-sharp'} | ids={int(len(batch) or 1)} | first_id={str((batch[0] or {}).get('image_id') or '')}",
                 )
             except Exception:
                 pass
 
-            # Task level upload attribute check
-            should_upload = cfg.hf_upload
-            if isinstance(item, dict) and "hf_upload" in item:
-                should_upload = bool(item["hf_upload"])
+            if bool(getattr(run_sharp_predict_once_fn, "_skip_predict", False)):
+                produced_plys = []
+            else:
+                batch_dir = None
+                try:
+                    base = os.path.join(str(cfg.save_dir), "_sharp_batch")
+                    os.makedirs(base, exist_ok=True)
+                    batch_dir = os.path.join(base, f"b-{int(time.time() * 1000)}-{uuid.uuid4().hex}")
+                    os.makedirs(batch_dir, exist_ok=True)
+                except Exception:
+                    batch_dir = None
 
-            for ply_path in plys or []:
-                if not should_upload:
-                    continue
-                payload = {
-                    "image_id": image_id,
-                    "image_path": image_path,
-                    "ply_path": ply_path,
-                    "download_location": dl,
-                    "meta": meta,
-                }
+                staged = []
+                try:
+                    for it in (batch or []):
+                        image_id = str((it or {}).get("image_id") or "")
+                        image_path = str((it or {}).get("image_path") or "")
+                        dl = (it or {}).get("download_location") if isinstance(it, dict) else None
 
-                # Avoid deadlock when upload queue is full: enqueue with timeout
-                # and keep checking stop/pause signals.
-                while True:
-                    if not gate(cfg, stop_event):
-                        break
+                        if image_path and (not os.path.isfile(str(image_path))) and dl:
+                            try:
+                                os.makedirs(os.path.dirname(str(image_path)), exist_ok=True)
+                                unsplash.download_image(str(dl), str(image_path))
+                            except Exception:
+                                pass
+
+                        if (not image_id) or (not image_path) or (not os.path.isfile(str(image_path))):
+                            continue
+                        ext = os.path.splitext(image_path)[1] or ".jpg"
+                        dst = os.path.join(batch_dir or os.path.dirname(image_path), f"{image_id}{ext}")
+                        try:
+                            if os.path.isfile(dst):
+                                os.remove(dst)
+                        except Exception:
+                            pass
+                        try:
+                            os.link(image_path, dst)
+                        except Exception:
+                            try:
+                                shutil.copy2(image_path, dst)
+                            except Exception:
+                                continue
+                        staged.append(dst)
+                except Exception:
+                    staged = []
+
+                if batch_dir:
+                    produced_plys = run_sharp_predict_once_fn(batch_dir)
+                else:
+                    produced_plys = []
+
+                try:
+                    for p in (staged or []):
+                        try:
+                            os.remove(p)
+                        except Exception:
+                            pass
+                    if batch_dir:
+                        try:
+                            os.rmdir(batch_dir)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            by_id: dict[str, str] = {}
+            try:
+                for p in (produced_plys or []):
                     try:
-                        upload_q.put(payload, timeout=0.5)
-                        break
+                        iid = os.path.splitext(os.path.basename(str(p)))[0]
+                        if iid:
+                            by_id[str(iid)] = str(p)
                     except Exception:
                         continue
+            except Exception:
+                by_id = {}
+
+            took_s = max(0.0, float(time.time()) - float(started_ts))
+
+            for it in (batch or []):
+                image_id = str((it or {}).get("image_id") or "")
+                image_path = str((it or {}).get("image_path") or "")
+                meta = it.get("meta") if isinstance(it, dict) else None
+                dl = it.get("download_location") if isinstance(it, dict) else None
+
+                ply_path = by_id.get(str(image_id))
+                plys = [ply_path] if (ply_path and os.path.isfile(str(ply_path))) else []
+
+                try:
+                    _debug(debug_fn, f"predict done | id={image_id} | plys={int(len(plys or []))} | s={round(took_s, 2)}")
+                except Exception:
+                    pass
+                try:
+                    metrics.emit(
+                        "predict_done",
+                        debug_fn=debug_fn,
+                        image_id=str(image_id),
+                        plys=int(len(plys or [])),
+                        s=float(took_s),
+                        **metrics.snapshot(),
+                    )
+                except Exception:
+                    pass
+
+                should_upload = cfg.hf_upload
+                if isinstance(it, dict) and "hf_upload" in it:
+                    should_upload = bool(it["hf_upload"])
+
+                for pp in plys:
+                    if not should_upload:
+                        continue
+                    payload = {
+                        "image_id": image_id,
+                        "image_path": image_path,
+                        "ply_path": pp,
+                        "download_location": dl,
+                        "meta": meta,
+                    }
+                    while True:
+                        if not gate(cfg, stop_event):
+                            break
+                        try:
+                            upload_q.put(payload, timeout=0.5)
+                            break
+                        except Exception:
+                            continue
+        except KeyboardInterrupt:
+            try:
+                if (not stop_event.is_set()) and (not stop_requested(cfg)):
+                    max_retry = 2
+                    for it in (batch or []):
+                        if not isinstance(it, dict):
+                            continue
+                        r = int(it.get("_kb_retries", 0) or 0)
+                        if r < int(max_retry):
+                            it["_kb_retries"] = int(r) + 1
+                            image_q.put(it)
+                        else:
+                            touch_stop_file(cfg)
+                            stop_event.set()
+                            break
+            except Exception:
+                pass
+        except Exception as e:
+            _log_exc(debug_fn, "predict 失败（batch）", e)
         finally:
             try:
                 with lock:
-                    counters["predict_inflight"] = max(0, int(counters.get("predict_inflight", 0)) - 1)
+                    counters["predict_inflight"] = max(0, int(counters.get("predict_inflight", 0)) - int(len(batch) or 1))
                     counters["predict_image_id"] = ""
                     counters["predict_started_ts"] = 0.0
             except Exception:
                 pass
-            image_q.task_done()
+            try:
+                for _ in (batch or [None]):
+                    image_q.task_done()
+            except Exception:
+                try:
+                    image_q.task_done()
+                except Exception:
+                    pass
 
 
 def download_loop(
@@ -1424,6 +1545,7 @@ def download_loop(
                 details=details,
                 local_has_focal_exif_fn=local_has_focal_exif_fn,
                 inject_focal_exif_if_missing_fn=inject_focal_exif_if_missing_fn,
+                debug_fn=debug_fn,
             )
 
             if not _enqueue_downloaded_image(

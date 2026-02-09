@@ -335,7 +335,87 @@ def _list_gaussian_plys() -> Set[str]:
         return set()
 
 
+_resident_predictor = None
+_resident_device = None
+_resident_device_name = None
+
+
 def _run_sharp_predict_once(input_path: str) -> List[str]:
+    try:
+        import logging
+        from pathlib import Path
+
+        import torch
+
+        from sharp.models import PredictorParams, create_predictor
+        from sharp.utils import io
+        from sharp.utils.gaussians import save_ply
+        from sharp.cli.predict import predict_image
+
+        DEFAULT_MODEL_URL = "https://ml-site.cdn-apple.com/models/sharp/sharp_2572gikvuh.pt"
+
+        global _resident_predictor, _resident_device, _resident_device_name
+
+        if _resident_predictor is None:
+            dev = str(config.SHARP_DEVICE or "default").strip().lower()
+            if dev == "default" or not dev:
+                if torch.cuda.is_available():
+                    dev = "cuda"
+                elif hasattr(torch, "mps") and torch.mps.is_available():
+                    dev = "mps"
+                else:
+                    dev = "cpu"
+
+            if bool(getattr(config, "FORBID_CPU", False)) and dev == "cpu":
+                raise RuntimeError("FORBID_CPU=1 且未找到可用 GPU（cuda/mps）")
+
+            _resident_device_name = dev
+            _resident_device = torch.device(dev)
+
+            ckpt = str(os.getenv("SHARP_CHECKPOINT_PATH", "") or "").strip()
+            if ckpt:
+                state_dict = torch.load(ckpt, weights_only=True)
+            else:
+                state_dict = torch.hub.load_state_dict_from_url(DEFAULT_MODEL_URL, progress=True)
+
+            predictor = create_predictor(PredictorParams())
+            predictor.load_state_dict(state_dict)
+            predictor.eval()
+            predictor.to(_resident_device)
+            _resident_predictor = predictor
+
+            try:
+                logging.getLogger("sharp").setLevel(logging.DEBUG if config.SHARP_VERBOSE else logging.INFO)
+            except Exception:
+                pass
+
+        out_dir = str(config.GAUSSIANS_DIR)
+        os.makedirs(out_dir, exist_ok=True)
+
+        in_path = Path(str(input_path))
+        exts = io.get_supported_image_extensions()
+        image_paths: List[Path] = []
+        if in_path.is_file():
+            if in_path.suffix in exts:
+                image_paths = [in_path]
+        else:
+            for ext in exts:
+                image_paths.extend(list(in_path.glob(f"**/*{ext}")))
+
+        produced: List[str] = []
+        for image_path in image_paths:
+            image, _, f_px = io.load_rgb(image_path)
+            height, width = image.shape[:2]
+
+            gaussians = predict_image(_resident_predictor, image, f_px, _resident_device)
+            ply_path = os.path.join(out_dir, f"{image_path.stem}.ply")
+            save_ply(gaussians, f_px, (height, width), Path(ply_path))
+            produced.append(str(ply_path))
+
+        return produced
+    except Exception as e:
+        print_debug(f"resident sharp predict 失败，将回退到子进程方式 | err={str(e)}")
+
     extra = ["-v"] if config.SHARP_VERBOSE else []
     plys_before = _list_gaussian_plys()
 
@@ -680,33 +760,61 @@ def inject_focal_exif_if_missing(image_path: str, focal_mm: float) -> bool:
         return False
 
     try:
-        img = Image.open(image_path)
-        exif = img.getexif()
-    except Exception:
-        return False
+        with Image.open(image_path) as img:
+            exif = img.getexif()
 
-    try:
+            try:
+                exif_ifd = exif.get_ifd(0x8769)
+                has_focal = (37386 in exif_ifd) or (41989 in exif_ifd)
+            except Exception:
+                exif_ifd = None
+                has_focal = False
+            if has_focal:
+                return False
+
+            rat = _mm_to_rational(focal_mm)
+            if not rat:
+                return False
+
+            try:
+                if exif_ifd is None:
+                    exif_ifd = exif.get_ifd(0x8769)
+            except Exception:
+                exif_ifd = None
+
+            if exif_ifd is None:
+                return False
+
+            exif_ifd[37386] = rat
+            try:
+                exif_ifd[41989] = int(round(float(focal_mm)))
+            except Exception:
+                pass
+
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+
+            exif_bytes = None
+            try:
+                exif_bytes = exif.tobytes()
+            except Exception:
+                exif_bytes = None
+
+            if exif_bytes:
+                img.save(image_path, exif=exif_bytes)
+            else:
+                img.save(image_path)
+
         try:
-            has_focal = (37386 in exif) or (41989 in exif)
+            with Image.open(image_path) as img2:
+                ex2 = img2.getexif()
+                try:
+                    ex2_ifd = ex2.get_ifd(0x8769)
+                    return bool((37386 in ex2_ifd) or (41989 in ex2_ifd))
+                except Exception:
+                    return False
         except Exception:
-            has_focal = False
-        if has_focal:
             return False
-
-        rat = _mm_to_rational(focal_mm)
-        if not rat:
-            return False
-
-        exif[37386] = rat
-        try:
-            exif[41989] = int(round(float(focal_mm)))
-        except Exception:
-            pass
-
-        if img.mode not in ("RGB", "L"):
-            img = img.convert("RGB")
-        img.save(image_path, exif=exif)
-        return True
     except Exception:
         return False
 
@@ -716,9 +824,51 @@ def _local_has_focal_exif(image_path: str) -> bool:
     except Exception:
         return False
     try:
-        img = Image.open(image_path)
-        exif = img.getexif()
-        return (37386 in exif) or (41989 in exif)
+        with Image.open(image_path) as img:
+            exif = img.getexif()
+    except Exception:
+        return False
+    try:
+        try:
+            exif_ifd = exif.get_ifd(0x8769)
+            if (37386 in exif_ifd) or (41989 in exif_ifd):
+                return True
+        except Exception:
+            exif_ifd = None
+
+        def _to_mm(v):
+            try:
+                return _to_float_maybe(v)
+            except Exception:
+                return None
+
+        focal_mm = None
+        try:
+            focal_mm = _to_mm(exif.get(41989))
+            if (focal_mm is None) or (focal_mm <= 0):
+                focal_mm = _to_mm(exif.get(37386))
+        except Exception:
+            focal_mm = None
+
+        if focal_mm is not None and float(focal_mm) > 0:
+            try:
+                ok = bool(inject_focal_exif_if_missing(image_path, float(focal_mm)))
+            except Exception:
+                ok = False
+            if ok:
+                try:
+                    with Image.open(image_path) as img2:
+                        ex2 = img2.getexif()
+                        ex2_ifd = ex2.get_ifd(0x8769)
+                        return bool((37386 in ex2_ifd) or (41989 in ex2_ifd))
+                except Exception:
+                    return True
+            return False
+
+        try:
+            return bool((37386 in exif) or (41989 in exif))
+        except Exception:
+            return False
     except Exception:
         return False
 
