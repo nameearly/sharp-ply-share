@@ -11,6 +11,13 @@ from datetime import datetime
 
 import requests
 
+try:
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+except Exception:  # pragma: no cover
+    HTTPAdapter = None
+    Retry = None
+
 # For auto-registration
 _AUTO_REG_LOCK = threading.Lock()
 _IS_REGISTERING = False
@@ -39,6 +46,54 @@ _rate_limited = False
 _all_keys_rate_limited_last_log_ts = 0.0
 _API_REQ_LOCK = threading.Lock()
 _debug = None
+
+
+def _configure_session_retries() -> None:
+    global _session
+    if HTTPAdapter is None or Retry is None:
+        return
+    try:
+        total = int(os.getenv("UNSPLASH_HTTP_RETRIES", "6") or "6")
+    except Exception:
+        total = 6
+    try:
+        backoff = float(os.getenv("UNSPLASH_HTTP_BACKOFF", "0.6") or "0.6")
+    except Exception:
+        backoff = 0.6
+    try:
+        retry = Retry(
+            total=max(0, total),
+            connect=max(0, total),
+            read=max(0, total),
+            status=max(0, total),
+            backoff_factor=max(0.0, float(backoff)),
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=("GET",),
+            raise_on_status=False,
+            respect_retry_after_header=True,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=16, pool_maxsize=16)
+        _session.mount("https://", adapter)
+        _session.mount("http://", adapter)
+    except Exception:
+        return
+
+
+def _sleep_retry(tries: int) -> None:
+    try:
+        base = float(os.getenv("UNSPLASH_NET_RETRY_BASE", "0.8") or "0.8")
+    except Exception:
+        base = 0.8
+    try:
+        cap = float(os.getenv("UNSPLASH_NET_RETRY_CAP", "20") or "20")
+    except Exception:
+        cap = 20.0
+    try:
+        t = min(float(cap), float(base) * (2 ** max(0, int(tries) - 1)))
+        t = float(t) * (0.7 + 0.6 * random.random())
+        time.sleep(max(0.2, float(t)))
+    except Exception:
+        time.sleep(1.0)
 
 
 def _is_unsplash_api_url(url: str) -> bool:
@@ -141,6 +196,11 @@ def configure_unsplash(
     _next_api_allowed_ts = 0.0
     _api_backoff_seconds = 0.0
     _rate_limited = False
+
+    try:
+        _configure_session_retries()
+    except Exception:
+        pass
 
 
 def resolve_unsplash_keys_json_path(*, base_dir: Optional[str] = None) -> str:
@@ -900,6 +960,10 @@ def fetch_photos(query, page=1, order_by="latest"):
             return (response.json() or {}).get("results", [])
         except Exception as e:
             _note_api_request_done()
+            if tries < 8:
+                _d(f"拉取图片失败（可重试） | query={query} | 页码={page} | err={str(e)}")
+                _sleep_retry(tries)
+                continue
             _d(f"拉取图片失败 | query={query} | 页码={page} | 错误={str(e)}")
             return None
 
@@ -939,6 +1003,10 @@ def fetch_list_photos(page=1, order_by="latest"):
             return response.json() or []
         except Exception as e:
             _note_api_request_done()
+            if tries < 8:
+                _d(f"拉取图片失败（可重试） | list/photos | 页码={page} | err={str(e)}")
+                _sleep_retry(tries)
+                continue
             _d(f"拉取图片失败 | list/photos | 页码={page} | 错误={str(e)}")
             return None
 
