@@ -1,7 +1,9 @@
 import os
 import random
+import shutil
 import threading
 import time
+import uuid
 
 from . import hf_utils
 from . import gsplat_share
@@ -200,6 +202,27 @@ def upload_sample_pair(
 ) -> dict:
     from huggingface_hub import CommitOperationAdd, HfApi
 
+    _ux = os.environ.get("HF_UPLOAD_USE_XET")
+    use_xet = True if (_ux is None or str(_ux).strip() == "") else str(_ux).strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "n",
+        "off",
+    }
+
+    _st = os.environ.get("HF_UPLOAD_XET_STAGING")
+    use_staging = (not use_xet) and False
+    if use_xet:
+        use_staging = True if (_st is None or str(_st).strip() == "") else str(_st).strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "n",
+            "off",
+        }
+    staging_dir = str(os.environ.get("HF_UPLOAD_STAGING_DIR") or "").strip()
+
     try:
         if (not image_path) or (not os.path.isfile(str(image_path))):
             raise FileNotFoundError(str(image_path))
@@ -293,19 +316,53 @@ def upload_sample_pair(
     f_img = None
     f_ply = None
     f_spz = None
+    staged_paths = []
     try:
-        f_img = open(str(image_path), "rb")
-        f_ply = open(str(ply_path), "rb")
-        ops = [
-            CommitOperationAdd(path_in_repo=rel_img, path_or_fileobj=f_img),
-            CommitOperationAdd(path_in_repo=rel_ply, path_or_fileobj=f_ply),
-        ]
-        if spz_path and rel_spz:
-            try:
-                f_spz = open(str(spz_path), "rb")
-                ops.append(CommitOperationAdd(path_in_repo=rel_spz, path_or_fileobj=f_spz))
-            except Exception:
-                f_spz = None
+        if use_xet:
+            img_src = str(image_path)
+            ply_src = str(ply_path)
+            spz_src = str(spz_path) if spz_path else ""
+
+            def _stage_one(src: str) -> str:
+                if (not use_staging) or (not src):
+                    return src
+                try:
+                    base = staging_dir or os.path.dirname(os.path.abspath(src))
+                    os.makedirs(base, exist_ok=True)
+                    name = os.path.basename(src)
+                    dst = os.path.join(base, f"stg-{uuid.uuid4().hex}-{name}")
+                    try:
+                        os.link(src, dst)
+                    except Exception:
+                        shutil.copy2(src, dst)
+                    staged_paths.append(dst)
+                    return dst
+                except Exception:
+                    return src
+
+            img_up = _stage_one(img_src)
+            ply_up = _stage_one(ply_src)
+            spz_up = _stage_one(spz_src) if spz_src else ""
+
+            ops = [
+                CommitOperationAdd(path_in_repo=rel_img, path_or_fileobj=img_up),
+                CommitOperationAdd(path_in_repo=rel_ply, path_or_fileobj=ply_up),
+            ]
+            if spz_path and rel_spz:
+                ops.append(CommitOperationAdd(path_in_repo=rel_spz, path_or_fileobj=(spz_up or spz_path)))
+        else:
+            f_img = open(str(image_path), "rb")
+            f_ply = open(str(ply_path), "rb")
+            ops = [
+                CommitOperationAdd(path_in_repo=rel_img, path_or_fileobj=f_img),
+                CommitOperationAdd(path_in_repo=rel_ply, path_or_fileobj=f_ply),
+            ]
+            if spz_path and rel_spz:
+                try:
+                    f_spz = open(str(spz_path), "rb")
+                    ops.append(CommitOperationAdd(path_in_repo=rel_spz, path_or_fileobj=f_spz))
+                except Exception:
+                    f_spz = None
 
         commit_t0 = float(time.time())
         try:
@@ -354,6 +411,12 @@ def upload_sample_pair(
                 f_img.close()
         except Exception:
             pass
+        if staged_paths:
+            for p in staged_paths:
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
     try:
         if commit_t0 is not None:
             commit_s = max(0.0, float(time.time()) - float(commit_t0))
@@ -457,6 +520,15 @@ def upload_sample_pairs(
 ) -> dict:
     from huggingface_hub import CommitOperationAdd, HfApi
 
+    _ux = os.environ.get("HF_UPLOAD_USE_XET")
+    use_xet = True if (_ux is None or str(_ux).strip() == "") else str(_ux).strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "n",
+        "off",
+    }
+
     if not isinstance(tasks, list) or (not tasks):
         return {}
 
@@ -464,6 +536,24 @@ def upload_sample_pairs(
     ops = []
     per = {}
     opened = []
+    staged_paths = []
+
+    def _stage_one(src: str) -> str:
+        if (not use_staging) or (not src):
+            return src
+        try:
+            base = staging_dir or os.path.dirname(os.path.abspath(src))
+            os.makedirs(base, exist_ok=True)
+            name = os.path.basename(src)
+            dst = os.path.join(base, f"stg-{uuid.uuid4().hex}-{name}")
+            try:
+                os.link(src, dst)
+            except Exception:
+                shutil.copy2(src, dst)
+            staged_paths.append(dst)
+            return dst
+        except Exception:
+            return src
 
     for t in tasks:
         if not isinstance(t, dict):
@@ -554,40 +644,49 @@ def upload_sample_pairs(
         except Exception:
             pass
 
-        try:
-            f_img = open(str(image_path), "rb")
-            opened.append(f_img)
-        except Exception:
+        if use_xet:
+            img_up = _stage_one(str(image_path))
+            ply_up = _stage_one(str(ply_path))
+            spz_up = _stage_one(str(spz_path)) if spz_path else ""
+            ops.append(CommitOperationAdd(path_in_repo=rel_img, path_or_fileobj=img_up))
+            ops.append(CommitOperationAdd(path_in_repo=rel_ply, path_or_fileobj=ply_up))
+            if spz_path and rel_spz:
+                ops.append(CommitOperationAdd(path_in_repo=rel_spz, path_or_fileobj=(spz_up or spz_path)))
+        else:
             try:
-                if debug_fn:
-                    debug_fn(f"HF 上传跳过：无法打开 image_path | id={str(image_id)} | path={str(image_path)}")
-            except Exception:
-                pass
-            continue
-        try:
-            f_ply = open(str(ply_path), "rb")
-            opened.append(f_ply)
-        except Exception:
-            try:
-                if debug_fn:
-                    debug_fn(f"HF 上传跳过：无法打开 ply_path | id={str(image_id)} | path={str(ply_path)}")
-            except Exception:
-                pass
-            continue
-
-        ops.append(CommitOperationAdd(path_in_repo=rel_img, path_or_fileobj=f_img))
-        ops.append(CommitOperationAdd(path_in_repo=rel_ply, path_or_fileobj=f_ply))
-        if spz_path and rel_spz:
-            try:
-                f_spz = open(str(spz_path), "rb")
-                opened.append(f_spz)
-                ops.append(CommitOperationAdd(path_in_repo=rel_spz, path_or_fileobj=f_spz))
+                f_img = open(str(image_path), "rb")
+                opened.append(f_img)
             except Exception:
                 try:
                     if debug_fn:
-                        debug_fn(f"HF SPZ 跳过：无法打开 spz_path | id={str(image_id)} | path={str(spz_path)}")
+                        debug_fn(f"HF 上传跳过：无法打开 image_path | id={str(image_id)} | path={str(image_path)}")
                 except Exception:
                     pass
+                continue
+            try:
+                f_ply = open(str(ply_path), "rb")
+                opened.append(f_ply)
+            except Exception:
+                try:
+                    if debug_fn:
+                        debug_fn(f"HF 上传跳过：无法打开 ply_path | id={str(image_id)} | path={str(ply_path)}")
+                except Exception:
+                    pass
+                continue
+
+            ops.append(CommitOperationAdd(path_in_repo=rel_img, path_or_fileobj=f_img))
+            ops.append(CommitOperationAdd(path_in_repo=rel_ply, path_or_fileobj=f_ply))
+            if spz_path and rel_spz:
+                try:
+                    f_spz = open(str(spz_path), "rb")
+                    opened.append(f_spz)
+                    ops.append(CommitOperationAdd(path_in_repo=rel_spz, path_or_fileobj=f_spz))
+                except Exception:
+                    try:
+                        if debug_fn:
+                            debug_fn(f"HF SPZ 跳过：无法打开 spz_path | id={str(image_id)} | path={str(spz_path)}")
+                    except Exception:
+                        pass
 
         per[image_id] = {
             "rel_img": rel_img,
@@ -649,11 +748,18 @@ def upload_sample_pairs(
                     create_pr=True,
                 )
     finally:
-        for f in opened:
-            try:
-                f.close()
-            except Exception:
-                pass
+        if not use_xet:
+            for f in opened:
+                try:
+                    f.close()
+                except Exception:
+                    pass
+        if staged_paths:
+            for p in staged_paths:
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
 
     try:
         if commit_t0 is not None:

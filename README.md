@@ -118,6 +118,12 @@ Configuration has been moved to `sharp_dataset_pipeline/config.py`. It supports 
 - Range done prefix: `ranges/progress/done_prefix.json` is used to avoid repo-wide listings of `ranges/done/`.
 - Ant-style range selection (optional): `ANT_ENABLED=1` with `ANT_CANDIDATE_RANGES`, `ANT_EPSILON`, `ANT_FRESH_SECS` to reduce contention across multiple clients.
 - HF upload batching (optional): `HF_UPLOAD_BATCH_SIZE=4` is recommended for throughput; small contributors can use `HF_UPLOAD_BATCH_SIZE=1`. `HF_UPLOAD_BATCH_WAIT_MS` controls the micro-batching wait window.
+- HF upload storage backend (Xet) and stability:
+  - By default the pipeline prefers path-based uploads to enable Hugging Face Xet storage (higher throughput).
+  - To disable Xet and force file-object uploads (more stable if you see transient `os error 2` file-missing issues): set `HF_UPLOAD_USE_XET=0`.
+  - When Xet is enabled, the pipeline can stage files to a stable location before committing to reduce races with local cleanup (enabled by default):
+    - Disable staging: `HF_UPLOAD_XET_STAGING=0`
+    - Customize staging directory: `HF_UPLOAD_STAGING_DIR=/path/to/staging` (defaults to the source file directory)
 - **Persistent queue recovery**: The pipeline now supports persistent queueing via `pending_queue.jsonl`. On startup, it automatically checks the HF repository and local index to absorb any unfinished tasks from previous runs.
 - **Runtime Queue Management**: You can manage the running pipeline's queue using the `queue_manager.py` tool. It allows adding tasks with custom properties (e.g., overriding HF upload) or listing/clearing pending tasks without stopping the pipeline.
 - **Optimized Token Rotation**: Unsplash API keys are now rotated more efficiently. For rate-limited keys, the pipeline will attempt to retry after 30 minutes (while maintaining a default 1-hour reset window), maximizing throughput.
@@ -126,3 +132,17 @@ Configuration has been moved to `sharp_dataset_pipeline/config.py`. It supports 
     - **Aggressive Throttling**: Progress and heartbeat sync frequency is reduced to once every 30 minutes.
     - **Local Caching**: Range lock status and progress are cached locally to minimize redundant API calls.
     - **Robust Backoff**: Centralized commit logic with exponential backoff and jitter for all HF operations.
+
+## Hugging Face authentication notes
+
+- If `HF_TOKEN` is set in the environment, it takes precedence over tokens configured via `hf auth login` / `huggingface-cli login`.
+- If you see errors like `Invalid username or password` while `hf auth login` succeeded, clear invalid env tokens first:
+  - PowerShell: `Remove-Item Env:HF_TOKEN -ErrorAction SilentlyContinue`
+- The pipeline uses `huggingface_hub` default token resolution (environment variables first, then local cache).
+
+## Common runtime messages
+
+- `Uploading files as a binary IO buffer is not supported by Xet Storage. Falling back to HTTP upload.`
+  - This indicates file-object uploads are being used. Enable Xet (default) or avoid passing file-like objects to use Xet.
+- `FutureWarning: The pynvml package is deprecated ...`
+  - This comes from PyTorch CUDA import; it is a warning and does not affect pipeline correctness.
