@@ -770,7 +770,13 @@ def upload_worker(
             except Exception:
                 pass
         except Exception as e:
-            _log_exc(debug_fn, "HF 上传失败（可重试）", e)
+            try:
+                if _request_stop_on_cuda_error(cfg, stop_event, debug_fn, e, where="upload_worker"):
+                    _log_exc(debug_fn, "HF 上传失败（CUDA fatal，已触发 STOP）", e)
+                else:
+                    _log_exc(debug_fn, "HF 上传失败（可重试）", e)
+            except Exception:
+                _log_exc(debug_fn, "HF 上传失败（可重试）", e)
         finally:
             try:
                 with lock:
@@ -1021,7 +1027,13 @@ def predict_worker(
             except Exception:
                 pass
         except Exception as e:
-            _log_exc(debug_fn, "predict 失败（batch）", e)
+            try:
+                if _request_stop_on_cuda_error(cfg, stop_event, debug_fn, e, where="predict_worker"):
+                    _log_exc(debug_fn, "predict 失败（CUDA fatal，已触发 STOP）", e)
+                else:
+                    _log_exc(debug_fn, "predict 失败（batch）", e)
+            except Exception:
+                _log_exc(debug_fn, "predict 失败（batch）", e)
         finally:
             try:
                 with lock:
@@ -1946,8 +1958,22 @@ def run(
                         c2 = c2.lower()
                         if c2 == "p":
                             paused = bool(pause_requested(cfg))
-                            set_pause_file(cfg, (not paused))
+                            new_paused = bool(set_pause_file(cfg, (not paused)))
+                            try:
+                                if debug_fn:
+                                    debug_fn(
+                                        f"KEY_P | action={'pause' if new_paused else 'resume'} | paused={int(new_paused)} | pause_file={_pause_file_path(cfg)}"
+                                    )
+                            except Exception:
+                                pass
                         elif c2 == "q":
+                            try:
+                                if debug_fn:
+                                    debug_fn(
+                                        f"KEY_Q | stop requested | paused={int(bool(pause_requested(cfg)))} | stop_file={_stop_file_path(cfg)} | pause_file={_pause_file_path(cfg)}"
+                                    )
+                            except Exception:
+                                pass
                             _request_stop("KEY_Q")
                             break
                     time.sleep(0.1)

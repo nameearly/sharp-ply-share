@@ -472,6 +472,36 @@ def _run_sharp_predict_once(input_path: str) -> List[str]:
 
         return produced
     except Exception as e:
+        try:
+            msg = str(e)
+        except Exception:
+            msg = ""
+        low = str(msg or "").lower()
+        is_cuda_fatal = any(
+            s in low
+            for s in (
+                "cuda error",
+                "cudaerrorunknown",
+                "device-side assert",
+                "cublas",
+                "cudnn",
+                "illegal memory access",
+                "unspecified launch failure",
+                "driver shutting down",
+                "torch_use_cuda_dsa",
+            )
+        )
+        if is_cuda_fatal:
+            try:
+                stop_path = os.path.abspath(os.path.join(str(CONTROL_DIR or SAVE_DIR), str(STOP_FILE or "STOP")))
+                os.makedirs(os.path.dirname(stop_path), exist_ok=True)
+                with open(stop_path, "a", encoding="utf-8"):
+                    pass
+                print_debug(f"CUDA_FATAL(resident) | stop_file={stop_path} | err={msg[:400]}")
+            except Exception:
+                pass
+            raise
+
         print_debug(f"resident sharp predict 失败，将回退到子进程方式 | err={str(e)}")
 
     extra = ["-v"] if config.SHARP_VERBOSE else []

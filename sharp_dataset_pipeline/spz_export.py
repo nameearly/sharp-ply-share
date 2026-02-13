@@ -358,7 +358,33 @@ def maybe_export_from_ply(
                         "--rgb",
                         "--force",
                     ]
-                    subprocess.run(cmd, check=True, timeout=timeout_s)
+                    env = None
+                    try:
+                        force_cpu = str(os.getenv("SPZ_FORCE_CPU", "") or "").strip().lower() in (
+                            "1",
+                            "true",
+                            "yes",
+                            "y",
+                            "on",
+                        )
+                        taichi_arch = str(os.getenv("SPZ_TAICHI_ARCH", "") or "").strip().lower()
+                        if force_cpu or taichi_arch:
+                            env = dict(os.environ)
+                            if force_cpu:
+                                env["TI_ENABLE_CUDA"] = "0"
+                                env["CUDA_VISIBLE_DEVICES"] = ""
+                                env["TI_ARCH"] = "cpu"
+                            if taichi_arch:
+                                env["TI_ARCH"] = str(taichi_arch)
+                    except Exception:
+                        env = None
+
+                    if env is not None:
+                        _print(
+                            f"SPZ: 3dgsconverter env override | TI_ARCH={env.get('TI_ARCH')} TI_ENABLE_CUDA={env.get('TI_ENABLE_CUDA')} CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES')}"
+                        )
+
+                    subprocess.run(cmd, check=True, timeout=timeout_s, env=env)
             except subprocess.TimeoutExpired as e:
                 _print(f"SPZ: 3dgsconverter 超时（跳过） | timeout_s={int(timeout_s or 0)} | err={str(e)}")
                 return None
