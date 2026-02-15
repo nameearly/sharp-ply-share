@@ -871,7 +871,7 @@ def inject_focal_exif_if_missing(image_path: str, focal_mm: float) -> bool:
                 exif_ifd = None
 
             if exif_ifd is None:
-                return False
+                raise RuntimeError("PIL_EXIF_IFD_MISSING")
 
             exif_ifd[37386] = rat
             try:
@@ -903,6 +903,54 @@ def inject_focal_exif_if_missing(image_path: str, focal_mm: float) -> bool:
                     return False
         except Exception:
             return False
+    except Exception:
+        pass
+
+    try:
+        import piexif
+    except Exception:
+        return False
+
+    try:
+        src = str(image_path)
+        try:
+            d = piexif.load(src)
+        except Exception:
+            d = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
+
+        ex = d.get("Exif") or {}
+        try:
+            has_focal = (piexif.ExifIFD.FocalLength in ex) or (piexif.ExifIFD.FocalLengthIn35mmFilm in ex)
+        except Exception:
+            has_focal = False
+        if has_focal:
+            return False
+
+        rat = _mm_to_rational(focal_mm)
+        if not rat:
+            return False
+
+        try:
+            ex[int(piexif.ExifIFD.FocalLength)] = tuple(rat)
+        except Exception:
+            pass
+        try:
+            ex[int(piexif.ExifIFD.FocalLengthIn35mmFilm)] = int(round(float(focal_mm)))
+        except Exception:
+            pass
+        d["Exif"] = ex
+
+        exif_bytes = piexif.dump(d)
+        piexif.insert(exif_bytes, src)
+
+        try:
+            d2 = piexif.load(src)
+            ex2 = d2.get("Exif") or {}
+            return bool(
+                (piexif.ExifIFD.FocalLength in ex2) or (piexif.ExifIFD.FocalLengthIn35mmFilm in ex2)
+            )
+        except Exception:
+            return True
     except Exception:
         return False
 
