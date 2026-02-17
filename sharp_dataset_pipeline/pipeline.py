@@ -929,24 +929,26 @@ def predict_worker(
                 except Exception:
                     staged = []
 
-                if batch_dir:
-                    produced_plys = run_sharp_predict_once_fn(batch_dir)
-                else:
-                    produced_plys = []
-
+                produced_plys = []
                 try:
-                    for p in (staged or []):
-                        try:
-                            os.remove(p)
-                        except Exception:
-                            pass
                     if batch_dir:
-                        try:
-                            os.rmdir(batch_dir)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                        produced_plys = run_sharp_predict_once_fn(batch_dir)
+                    else:
+                        produced_plys = []
+                finally:
+                    try:
+                        for p in (staged or []):
+                            try:
+                                os.remove(p)
+                            except Exception:
+                                pass
+                        if batch_dir:
+                            try:
+                                os.rmdir(batch_dir)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
 
             by_id: dict[str, str] = {}
             try:
